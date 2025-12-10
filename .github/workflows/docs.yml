@@ -18,7 +18,7 @@ jobs:
 
       - uses: leanprover/lean-action@v1
         with:
-          build-args: '-R -Kenv=dev build Lapis:docs'
+          build-args: '-R -Kenv=dev Lapis:docs'
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
