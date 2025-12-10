@@ -87,6 +87,6 @@ def Document.getWordAt (doc : Document) (pos : Position) : Option String :=
     -- Find end of word by going forward
     let endPos := pos.character + (line.toList.drop pos.character |>.takeWhile isWordChar |>.length)
     if start == endPos then none
-    else some (Substring.toString ⟨line, ⟨start⟩, ⟨endPos⟩⟩)
+    else some (Substring.Raw.toString ⟨line, ⟨start⟩, ⟨endPos⟩⟩)
 
 end Lapis.Server.Documents

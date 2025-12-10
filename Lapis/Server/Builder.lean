@@ -20,10 +20,10 @@ inductive HandlerResult where
   | error (code : Int) (message : String)
   deriving Inhabited
 
-/-- A request handler -/
+/-- A request handler takes JSON params and returns a result in ServerM -/
 def RequestHandler (UserState : Type) := Json → ServerM UserState HandlerResult
 
-/-- A notification handler -/
+/-- A notification handler takes JSON params and performs side effects in ServerM -/
 def NotificationHandler (UserState : Type) := Json → ServerM UserState Unit
 
 /-- Server configuration -/
@@ -89,7 +89,9 @@ def ServerConfig.onNotification [FromJson Params]
   let wrappedHandler : NotificationHandler UserState := fun json => do
     match FromJson.fromJson? json with
     | .error _ => pure ()  -- Ignore invalid notifications
-    | .ok params => handler params
+    | .ok params =>
+      let _ ← handler params
+      pure ()
   { config with notificationHandlers := (method, wrappedHandler) :: config.notificationHandlers }
 
 /-- Find a request handler -/
