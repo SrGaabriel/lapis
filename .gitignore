@@ -1,7 +1,32 @@
 /.lake
 
-# Created by https://www.toptal.com/developers/gitignore/api/linux,macos,windows,visualstudiocode
-# Edit at https://www.toptal.com/developers/gitignore?templates=linux,macos,windows,visualstudiocode
+# Created by https://www.toptal.com/developers/gitignore/api/linux,macos,windows,visualstudiocode,haskell
+# Edit at https://www.toptal.com/developers/gitignore?templates=linux,macos,windows,visualstudiocode,haskell
+
+### Haskell ###
+dist
+dist-*
+cabal-dev
+*.o
+*.hi
+*.hie
+*.chi
+*.chs.h
+*.dyn_o
+*.dyn_hi
+.hpc
+.hsenv
+.cabal-sandbox/
+cabal.sandbox.config
+*.prof
+*.aux
+*.hp
+*.eventlog
+.stack-work/
+cabal.project.local
+cabal.project.local~
+.HTF/
+.ghc.environment.*
 
 ### Linux ###
 *~
@@ -96,4 +121,4 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-# End of https://www.toptal.com/developers/gitignore/api/linux,macos,windows,visualstudiocode
+# End of https://www.toptal.com/developers/gitignore/api/linux,macos,windows,visualstudiocode,haskell

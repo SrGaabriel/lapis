@@ -1,6 +1,3 @@
-/-
-  Example LSP server using Lapis
--/
 import Lapis
 
 open Lapis.Protocol.Types
@@ -10,23 +7,18 @@ open Lapis.Server.Monad
 open Lapis.Server.Builder
 open Lapis.Server.Dispatcher
 
-/-- Our custom server state -/
-structure MyState where
+structure TestState where
   requestCount : Nat := 0
 
-/-- Handle hover requests -/
-def handleHover (params : HoverParams) : ServerM MyState (Option Hover) := do
+def handleHover (params : HoverParams) : ServerM TestState (Option Hover) := do
   modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  -- Get the document
   let some doc ← getDocument params.textDocument.uri
     | return none
 
-  -- Get word at position
   let some word := doc.getWordAt params.position
     | return none
 
-  -- Return hover with the word
   return some {
     contents := {
       kind := .markdown
@@ -35,9 +27,7 @@ def handleHover (params : HoverParams) : ServerM MyState (Option Hover) := do
     range := none
   }
 
-/-- Handle completion requests -/
-def handleCompletion (params : CompletionParams) : ServerM MyState CompletionList := do
-  -- Simple static completions for demo
+def handleCompletion (_params : CompletionParams) : ServerM TestState CompletionList := do
   return {
     isIncomplete := false
     items := #[
@@ -47,7 +37,7 @@ def handleCompletion (params : CompletionParams) : ServerM MyState CompletionLis
   }
 
 def main : IO Unit := do
-  let config := ServerConfig.new "example-server" ({} : MyState)
+  let config := ServerConfig.new "example-server" ({} : TestState)
     |>.withVersion "0.1.0"
     |>.withCapabilities {
       textDocumentSync := some {

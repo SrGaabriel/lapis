@@ -1,0 +1,36 @@
+cabal-version:      3.0
+name:               lapis-client-test
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            Apache-2.0
+license-file:       ../LICENSE
+author:             Gabriel Minatel
+maintainer:         gabriel@minatel.dev
+-- copyright:
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common warnings
+    ghc-options: -Wall
+
+test-suite lapis-tests-test
+    import:           warnings
+    default-language: Haskell2010
+    other-modules:    Test.Initialization
+                    , Test.DocumentSync
+                    , Test.Hover
+                    , Test.Completion
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:    base ^>=4.21.0.0
+                    , lsp-test >0.17
+                    , lsp-types >2.3
+                    , lsp >2.7
+                    , hspec >2.11
+                    , text
+                    , filepath
+                    , lens
+                    , data-default
