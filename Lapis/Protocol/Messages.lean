@@ -347,4 +347,46 @@ instance : FromJson ReferenceParams where
     let context ← json.getObjValAs? ReferenceContext "context"
     return { textDocument, position, context }
 
+/-- Workspace configuration item -/
+structure ConfigurationItem where
+  scopeUri : Option DocumentUri := none
+  «section» : Option String := none
+  deriving Inhabited, Repr
+
+instance : ToJson ConfigurationItem where
+  toJson c := Json.mkObj <|
+    (match c.scopeUri with | some uri => [("scopeUri", toJson uri)] | none => []) ++
+    (match c.«section» with | some s => [("section", toJson s)] | none => [])
+
+instance : FromJson ConfigurationItem where
+  fromJson? json := do
+    let scopeUri := (json.getObjValAs? DocumentUri "scopeUri").toOption
+    let «section» := (json.getObjValAs? String "section").toOption
+    return { scopeUri, «section» }
+
+/-- Parameters for workspace/configuration request -/
+structure ConfigurationParams where
+  items : Array ConfigurationItem
+  deriving Inhabited, Repr
+
+instance : ToJson ConfigurationParams where
+  toJson p := Json.mkObj [("items", toJson p.items)]
+
+instance : FromJson ConfigurationParams where
+  fromJson? json := do
+    let items ← json.getObjValAs? (Array ConfigurationItem) "items"
+    return { items }
+
+/-- Parameters for workspace/didChangeConfiguration notification -/
+structure DidChangeConfigurationParams (ConfigType : Type) where
+  settings : ConfigType
+
+instance [ToJson ConfigType] : ToJson (DidChangeConfigurationParams ConfigType) where
+  toJson p := Json.mkObj [("settings", toJson p.settings)]
+
+instance [FromJson ConfigType] : FromJson (DidChangeConfigurationParams ConfigType) where
+  fromJson? json := do
+    let settings ← json.getObjValAs? ConfigType "settings"
+    return { settings }
+
 end Lapis.Protocol.Messages

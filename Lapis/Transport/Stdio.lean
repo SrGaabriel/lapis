@@ -1,12 +1,4 @@
-/-
-  stdin/stdout transport for LSP
-
-  LSP uses a simple framing protocol:
-  - Headers are separated by \r\n
-  - Header section ends with \r\n\r\n
-  - Content-Length header is required
-  - Content is UTF-8 encoded JSON
--/
+/- stdin/stdout transport for LSP -/
 import Lapis.Transport.Base
 
 namespace Lapis.Transport.Stdio

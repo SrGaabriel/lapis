@@ -10,3 +10,4 @@ import Lapis.Server.Documents
 import Lapis.Server.Monad
 import Lapis.Server.Builder
 import Lapis.Server.Dispatcher
+import Lapis.Server.Receiver

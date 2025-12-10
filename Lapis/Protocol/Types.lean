@@ -10,8 +10,11 @@ open Lean Json
 
 abbrev DocumentUri := String
 
+/-- Position in a text document expressed as zero-based line and character offset -/
 structure Position where
+  /-- Line position in a document (zero-based). -/
   line : Nat
+  /-- Character offset on a line in a document (zero-based). -/
   character : Nat
   deriving Inhabited, BEq, Repr
 
@@ -30,8 +33,11 @@ instance : Ord Position where
     | .eq => compare a.character b.character
     | ord => ord
 
+/-- A range in a text document expressed as (zero-based) start and end positions -/
 structure Range where
+  /-- The range's start position -/
   start : Position
+  /-- The range's end position -/
   «end» : Position
   deriving Inhabited, BEq, Repr
 
@@ -44,8 +50,11 @@ instance : FromJson Range where
     let «end» ← json.getObjValAs? Position "end"
     return { start, «end» }
 
+/-- A location inside a resource, such as a line inside a text file -/
 structure Location where
+  /-- The document URI -/
   uri : DocumentUri
+  /-- The range within the document -/
   range : Range
   deriving Inhabited, BEq, Repr
 

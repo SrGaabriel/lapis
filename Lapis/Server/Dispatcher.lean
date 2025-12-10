@@ -5,6 +5,7 @@ import Lapis.Transport.Base
 import Lapis.Transport.Stdio
 import Lapis.Server.Monad
 import Lapis.Server.Builder
+import Lapis.Server.Receiver
 import Std.Data.HashMap
 
 namespace Lapis.Server.Dispatcher
@@ -17,6 +18,7 @@ open Lapis.Protocol.Capabilities
 open Lapis.Transport
 open Lapis.Server.Monad
 open Lapis.Server.Builder
+open Lapis.Server.Receiver
 open Std (HashMap)
 
 structure PendingRequests where
@@ -186,12 +188,15 @@ partial def runServer [Transport T] (transport : T) (config : ServerConfig UserS
   let stateRef ← IO.mkRef initialState
   let stateMutex ← AsyncMutex.new
 
+  let pendingResponses ← PendingResponses.new
+
   let ctx : ServerContext UserState := {
     capabilities := config.capabilities
     serverInfo := { name := config.name, version := config.version }
     outputChannel := outputChannel
     stateRef := stateRef
     stateMutex := stateMutex
+    pendingResponses := pendingResponses
   }
 
   let pendingRequests ← PendingRequests.new
@@ -223,12 +228,16 @@ partial def runServer [Transport T] (transport : T) (config : ServerConfig UserS
       | .request req =>
         processRequestAsync runtime req
 
-      | .response _ =>
-        -- TODO: handle responses from client (for server-initiated requests)
+      | .response resp =>
+        pendingResponses.execute resp.id resp.result
         pure ()
 
-      | .errorResponse _ =>
-        -- TODO: handle error responses from client
+      | .errorResponse errResp =>
+        match errResp.id with
+        | some id =>
+          let errorMsg := s!"Error {errResp.error.code}: {errResp.error.message}"
+          pendingResponses.executeError id errorMsg
+        | none => pure ()
         pure ()
 
       loop

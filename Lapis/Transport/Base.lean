@@ -72,6 +72,11 @@ def OutputChannel.sendNotification (ch : OutputChannel) (method : String) (param
   let notif : NotificationMessage := { method, params := some params }
   ch.send (.notification notif)
 
+/-- Send a request through the output channel -/
+def OutputChannel.sendRequest (ch : OutputChannel) (id : RequestId) (method : String) (params : Lean.Json) : IO Unit := do
+  let req : RequestMessage := { id, method, params := some params }
+  ch.send (.request req)
+
 partial def messageLoop [Transport T] (transport : T) (handler : Message → IO (Option Message)) : IO Unit := do
   match ← Transport.readMessage transport with
   | none => return () -- EOF

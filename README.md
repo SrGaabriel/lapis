@@ -1,3 +1,3 @@
 # ✏️ lapis
 
-A minimal, lightweight Language Server Protocol (LSP) implementation in Lean 4.
+A minimal, lightweight Language Server Protocol (LSP) framework in Lean 4.

@@ -4,15 +4,18 @@ import Lapis.Protocol.Messages
 import Lapis.Protocol.Capabilities
 import Lapis.Transport.Base
 import Lapis.Server.Documents
+import Lapis.Server.Receiver
 
 namespace Lapis.Server.Monad
 
+open Lean (Json toJson FromJson)
 open Lapis.Protocol.JsonRpc
 open Lapis.Protocol.Types
 open Lapis.Protocol.Messages
 open Lapis.Protocol.Capabilities
 open Lapis.Transport
 open Lapis.Server.Documents
+open Lapis.Server.Receiver
 
 /-- Server state -/
 structure ServerState (UserState : Type) where
@@ -38,6 +41,8 @@ structure ServerContext (UserState : Type) where
   stateRef : IO.Ref (ServerState UserState)
   /-- Mutex for state modifications that need to be atomic -/
   stateMutex : AsyncMutex
+  /-- Pending responses for client-initiated requests -/
+  pendingResponses : PendingResponses
 
 /-- The server monad - provides access to shared context and IO. -/
 abbrev ServerM (UserState : Type) := ReaderT (ServerContext UserState) IO
@@ -119,6 +124,33 @@ def sendNotification (method : String) (params : Lean.Json) : ServerM UserState 
   let ch ← getOutputChannel
   let _ ← ch.sendNotification method params
   pure ()
+
+/-- Send a request to the client and register a handler for the response -/
+def sendRequest (method : String) (params : Lean.Json) : ServerM UserState (IO.Promise Lean.Json) := do
+  let ch ← getOutputChannel
+  let pendingResponses := (← read).pendingResponses
+
+  let promise ← IO.Promise.new
+
+  let requestId ← pendingResponses.register promise
+  let _ ← ch.sendRequest requestId method params
+  pure promise
+
+/-- Request configuration from the client -/
+def requestConfiguration (items : Array ConfigurationItem) : ServerM UserState (Except String (Array Json)) := do
+  let params : ConfigurationParams := { items }
+  let promise ← sendRequest "workspace/configuration" (toJson params)
+  let some result := promise.result?.get
+    | return Except.error "Promise was not resolved"
+
+  -- Check if it's an error response
+  if let some errorMsg := result.getObjValAs? String "error" |>.toOption then
+    return Except.error errorMsg
+
+  -- Try to parse as array
+  match FromJson.fromJson? (α := Array Json) result with
+  | Except.ok arr => return Except.ok arr
+  | Except.error e => return Except.error s!"Failed to parse configuration response: {e}"
 
 /-- Publish diagnostics to the client -/
 def publishDiagnostics (params : PublishDiagnosticsParams) : ServerM UserState Unit := do
