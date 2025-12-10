@@ -1,0 +1,10 @@
+name = "lapis"
+version = "0.1.0"
+defaultTargets = ["lapis"]
+
+[[lean_lib]]
+name = "Lapis"
+
+[[lean_exe]]
+name = "lapis"
+root = "Main"
