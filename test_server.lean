@@ -23,8 +23,8 @@ def findSubstring (haystack needle : String) : Option Nat := Id.run do
 def containsSubstring (haystack needle : String) : Bool :=
   (findSubstring haystack needle).isSome
 
-def computeDiagnostics (doc : Document) : Array Diagnostic := Id.run do
-  let lines := doc.content.splitOn "\n"
+def computeDiagnostics (content : String) : Array Diagnostic := Id.run do
+  let lines := content.splitOn "\n"
   let mut diagnostics : Array Diagnostic := #[]
   for h : i in [:lines.length] do
     let line := lines[i]
@@ -54,7 +54,8 @@ def computeDiagnostics (doc : Document) : Array Diagnostic := Id.run do
 
 def updateDiagnostics (uri : DocumentUri) : ServerM TestState Unit := do
   let some doc ← getDocument uri | return
-  let diagnostics := computeDiagnostics doc
+  let some content ← getDocumentContent uri | return
+  let diagnostics := computeDiagnostics content
   publishDiagnostics {
     uri := uri
     version := some doc.version
@@ -64,10 +65,10 @@ def updateDiagnostics (uri : DocumentUri) : ServerM TestState Unit := do
 def handleHover (params : HoverParams) : ServerM TestState (Option Hover) := do
   modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some doc ← getDocument params.textDocument.uri
+  let some _doc ← getDocument params.textDocument.uri
     | return none
 
-  let some word := doc.getWordAt params.position
+  let some word ← getDocumentWordAt params.textDocument.uri params.position
     | return none
 
   let count ← getUserState

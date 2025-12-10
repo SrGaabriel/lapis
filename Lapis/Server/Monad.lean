@@ -23,11 +23,10 @@ structure ServerState (UserState : Type) where
   initialized : Bool := false
   /-- Whether shutdown has been requested -/
   shutdownRequested : Bool := false
-  /-- Document store -/
-  documents : DocumentStore := DocumentStore.empty
+  /-- Document store (VFS-backed) -/
+  documents : DocumentStore
   /-- User-defined state -/
   userState : UserState
-  deriving Inhabited
 
 /-- Server context (shared across all request handlers) -/
 structure ServerContext (UserState : Type) where
@@ -95,25 +94,59 @@ def isShutdownRequested : ServerM UserState Bool := do
 def requestShutdown : ServerM UserState Unit :=
   modifyServerState fun st => { st with shutdownRequested := true }
 
-/-- Get a document by URI -/
-def getDocument (uri : DocumentUri) : ServerM UserState (Option Document) := do
-  return (← getServerState).documents.get? uri
-
-/-- Get all documents -/
-def getDocuments : ServerM UserState DocumentStore := do
+/-- Get the document store -/
+def getDocumentStore : ServerM UserState DocumentStore := do
   return (← getServerState).documents
 
+/-- Get a document by URI -/
+def getDocument (uri : DocumentUri) : ServerM UserState (Option Document) := do
+  let store ← getDocumentStore
+  store.get uri
+
+/-- Get all open document URIs -/
+def getDocumentUris : ServerM UserState (List String) := do
+  let store ← getDocumentStore
+  store.getOpenDocuments
+
 /-- Open a document -/
-def openDocument (params : DidOpenTextDocumentParams) : ServerM UserState Unit :=
-  modifyServerState fun st => { st with documents := st.documents.open params }
+def openDocument (params : DidOpenTextDocumentParams) : ServerM UserState Unit := do
+  let store ← getDocumentStore
+  openDoc store params
 
 /-- Close a document -/
-def closeDocument (params : DidCloseTextDocumentParams) : ServerM UserState Unit :=
-  modifyServerState fun st => { st with documents := st.documents.close params }
+def closeDocument (params : DidCloseTextDocumentParams) : ServerM UserState Unit := do
+  let store ← getDocumentStore
+  closeDoc store params
 
 /-- Apply document changes -/
-def changeDocument (params : DidChangeTextDocumentParams) : ServerM UserState Unit :=
-  modifyServerState fun st => { st with documents := st.documents.change params }
+def changeDocument (params : DidChangeTextDocumentParams) : ServerM UserState Unit := do
+  let store ← getDocumentStore
+  changeDoc store params
+
+/-- Get document content -/
+def getDocumentContent (uri : DocumentUri) : ServerM UserState (Option String) := do
+  let store ← getDocumentStore
+  Documents.getContent store uri
+
+/-- Get a line from a document -/
+def getDocumentLine (uri : DocumentUri) (line : Nat) : ServerM UserState (Option String) := do
+  let store ← getDocumentStore
+  Documents.getLine store uri line
+
+/-- Get word at position -/
+def getDocumentWordAt (uri : DocumentUri) (pos : Position) : ServerM UserState (Option String) := do
+  let store ← getDocumentStore
+  Documents.getWordAt store uri pos
+
+/-- Convert position to byte offset -/
+def documentPositionToOffset (uri : DocumentUri) (pos : Position) : ServerM UserState (Option Nat) := do
+  let store ← getDocumentStore
+  Documents.positionToOffset store uri pos
+
+/-- Convert byte offset to position -/
+def documentOffsetToPosition (uri : DocumentUri) (offset : Nat) : ServerM UserState (Option Position) := do
+  let store ← getDocumentStore
+  Documents.offsetToPosition store uri offset
 
 /-- Get the output channel for sending messages to the client -/
 def getOutputChannel : ServerM UserState OutputChannel := do

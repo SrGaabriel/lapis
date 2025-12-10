@@ -1,5 +1,3 @@
-"""Tests for Lapis LSP diagnostics."""
-
 import asyncio
 
 import pytest

@@ -1,5 +1,3 @@
-"""Debug test to check if server is responding."""
-
 import asyncio
 
 import pytest

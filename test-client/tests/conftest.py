@@ -1,5 +1,3 @@
-"""Pytest configuration for Lapis LSP tests."""
-
 import os
 
 import pytest_lsp

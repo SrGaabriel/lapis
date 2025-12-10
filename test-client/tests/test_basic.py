@@ -1,5 +1,3 @@
-"""Basic tests for Lapis LSP server."""
-
 import pytest
 from lsprotocol.types import (
     DidOpenTextDocumentParams,

@@ -182,7 +182,11 @@ def processNotification (rt : ServerRuntime UserState) (msg : NotificationMessag
 partial def runServer [Transport T] (transport : T) (config : ServerConfig UserState) : IO Unit := do
   let outputChannel ← OutputChannel.new (Transport.writeMessage transport)
 
+  -- Create VFS document store
+  let documents ← Lapis.Server.Documents.createDocumentStore
+
   let initialState : ServerState UserState := {
+    documents := documents
     userState := config.initialState
   }
   let stateRef ← IO.mkRef initialState

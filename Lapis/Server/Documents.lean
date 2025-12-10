@@ -1,92 +1,114 @@
+/-
+  Server Document Handling using VFS
+
+  This module bridges the LSP protocol types with the VFS document store.
+-/
+
 import Lapis.Protocol.Types
 import Lapis.Protocol.Messages
-import Std.Data.HashMap
+import Lapis.VFS
 
 namespace Lapis.Server.Documents
 
 open Lapis.Protocol.Types
 open Lapis.Protocol.Messages
-open Std (HashMap)
 
-structure Document where
-  uri : DocumentUri
-  languageId : String
-  version : Int
-  content : String
-  deriving Inhabited, Repr
+-- Use VFS types with explicit namespace
+abbrev DocumentStore := Lapis.VFS.DocumentStore
+abbrev Document := Lapis.VFS.Document.Document
+abbrev LspPosition := Lapis.VFS.Position.LspPosition
+abbrev LspRange := Lapis.VFS.Position.LspRange
+abbrev SnapshotId := Lapis.VFS.Document.SnapshotId
+abbrev SnapshotReason := Lapis.VFS.Document.SnapshotReason
 
-abbrev DocumentStore := HashMap DocumentUri Document
+/-! ## Protocol to VFS Conversion -/
 
-def DocumentStore.empty : DocumentStore := HashMap.emptyWithCapacity 16
+/-- Convert LSP Protocol Position to VFS LspPosition -/
+def toVfsPosition (pos : Position) : LspPosition :=
+  ⟨pos.line, pos.character⟩
 
-def DocumentStore.open (store : DocumentStore) (params : DidOpenTextDocumentParams) : DocumentStore :=
+/-- Convert VFS LspPosition to LSP Protocol Position -/
+def fromVfsPosition (pos : LspPosition) : Position :=
+  ⟨pos.line, pos.character⟩
+
+/-- Convert LSP Protocol Range to VFS LspRange -/
+def toVfsRange (range : Range) : LspRange :=
+  ⟨toVfsPosition range.start, toVfsPosition range.end⟩
+
+/-- Convert VFS LspRange to LSP Protocol Range -/
+def fromVfsRange (range : LspRange) : Range :=
+  ⟨fromVfsPosition range.start, fromVfsPosition range.end⟩
+
+/-! ## DocumentStore Operations -/
+
+/-- Create empty document store -/
+def createDocumentStore : IO DocumentStore := Lapis.VFS.DocumentStore.empty
+
+/-- Open a document from LSP parameters -/
+def openDoc (store : DocumentStore) (params : DidOpenTextDocumentParams) : IO Unit := do
   let doc := params.textDocument
-  store.insert doc.uri {
-    uri := doc.uri
-    languageId := doc.languageId
-    version := doc.version
-    content := doc.text
-  }
+  store.openDocument doc.uri doc.languageId doc.version doc.text
 
-def DocumentStore.close (store : DocumentStore) (params : DidCloseTextDocumentParams) : DocumentStore :=
-  store.erase params.textDocument.uri
+/-- Close a document from LSP parameters -/
+def closeDoc (store : DocumentStore) (params : DidCloseTextDocumentParams) : IO Unit := do
+  store.closeDocument params.textDocument.uri
 
-def DocumentStore.get? (store : DocumentStore) (uri : DocumentUri) : Option Document :=
-  HashMap.get? store uri
+/-- Get a document by URI -/
+def getDoc (store : DocumentStore) (uri : DocumentUri) : IO (Option Document) :=
+  store.get uri
 
-private def applyChange (content : String) (change : TextDocumentContentChangeEvent) : String :=
-  match change.range with
-  | none =>
-    change.text
-  | some range =>
-    let lines := content.splitOn "\n"
-    let startLine := range.start.line
-    let startChar := range.start.character
-    let endLine := range.end.line
-    let endChar := range.end.character
-
-    -- Get the prefix (before the change)
-    let prefixLines := lines.take startLine
-    let prefixLastLine := (lines[startLine]?.getD "").take startChar
-    let prefixStr := String.intercalate "\n" prefixLines.toArray.toList ++
-                     (if prefixLines.length > 0 then "\n" else "") ++ prefixLastLine
-
-    -- Get the suffix (after the change)
-    let suffixFirstLine := (lines[endLine]?.getD "").drop endChar
-    let suffixLines := lines.drop (endLine + 1)
-    let suffixStr := suffixFirstLine ++
-                     (if suffixLines.length > 0 then "\n" else "") ++
-                     String.intercalate "\n" suffixLines.toArray.toList
-
-    prefixStr ++ change.text ++ suffixStr
-
-def DocumentStore.change (store : DocumentStore) (params : DidChangeTextDocumentParams) : DocumentStore :=
+/-- Apply document changes from LSP parameters -/
+def changeDoc (store : DocumentStore) (params : DidChangeTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
-  match HashMap.get? store uri with
-  | none => store -- Document not found, ignore
-  | some doc =>
-    let newContent := params.contentChanges.foldl (init := doc.content) applyChange
-    store.insert uri { doc with
-      version := params.textDocument.version
-      content := newContent
-    }
+  let version := params.textDocument.version
 
-/-- Get content at a position -/
-def Document.getLine (doc : Document) (line : Nat) : Option String :=
-  let lines := doc.content.splitOn "\n"
-  lines[line]?
+  for change in params.contentChanges do
+    match change.range with
+    | none =>
+      -- Full document replacement
+      store.setContent uri change.text version
+    | some range =>
+      -- Incremental change
+      let vfsRange := toVfsRange range
+      store.applyEdit uri vfsRange change.text version
+
+/-! ## Document Accessors -/
+
+/-- Get content at a line -/
+def getLine (store : DocumentStore) (uri : DocumentUri) (line : Nat) : IO (Option String) :=
+  store.getLine uri line
+
+/-- Get full document content -/
+def getContent (store : DocumentStore) (uri : DocumentUri) : IO (Option String) :=
+  store.getContent uri
+
+/-- Get document version -/
+def getVersion (store : DocumentStore) (uri : DocumentUri) : IO (Option Int) :=
+  store.getVersion uri
 
 /-- Get word at position (simple implementation) -/
-def Document.getWordAt (doc : Document) (pos : Position) : Option String :=
-  match doc.getLine pos.line with
-  | none => none
+def getWordAt (store : DocumentStore) (uri : DocumentUri) (pos : Position) : IO (Option String) := do
+  match ← store.getLine uri pos.line with
+  | none => return none
   | some line =>
     let isWordChar := fun c => c.isAlphanum || c == '_'
     -- Find start of word by going backwards
     let start := pos.character - (line.toList.take pos.character |>.reverse.takeWhile isWordChar |>.length)
     -- Find end of word by going forward
     let endPos := pos.character + (line.toList.drop pos.character |>.takeWhile isWordChar |>.length)
-    if start == endPos then none
-    else some (Substring.Raw.toString ⟨line, ⟨start⟩, ⟨endPos⟩⟩)
+    if start == endPos then return none
+    else return some (Substring.Raw.toString ⟨line, ⟨start⟩, ⟨endPos⟩⟩)
+
+/-! ## Position Conversion -/
+
+/-- Convert LSP position to byte offset -/
+def positionToOffset (store : DocumentStore) (uri : DocumentUri) (pos : Position) : IO (Option Nat) :=
+  store.positionToOffset uri (toVfsPosition pos)
+
+/-- Convert byte offset to LSP position -/
+def offsetToPosition (store : DocumentStore) (uri : DocumentUri) (offset : Nat) : IO (Option Position) := do
+  match ← store.offsetToPosition uri offset with
+  | none => return none
+  | some vfsPos => return some (fromVfsPosition vfsPos)
 
 end Lapis.Server.Documents

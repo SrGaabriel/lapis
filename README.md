@@ -55,6 +55,15 @@ def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit 
 - [x] User-defined state management
 - [x] Server and client capability negotiation
 
+### Virtual File System (VFS)
+- [x] Efficient finger tree-based text representation
+- [x] Piece table for fast incremental edits
+- [x] Line index with dirty range tracking
+- [x] UTF-8/UTF-16 position conversion for LSP compatibility
+- [x] Document snapshots with reference counting
+- [x] Thread-safe document store with IO-based operations
+- [x] O(log n) split/concatenation, O(1) amortized cons/snoc
+
 ### Implemented LSP Features
 - [x] `initialize` / `shutdown` / `exit` lifecycle
 - [x] Text document synchronization (full and incremental)
