@@ -2,6 +2,11 @@ name = "lapis"
 version = "0.1.0"
 defaultTargets = ["Lapis"]
 
+[[require]]
+name = "doc-gen4"
+git = "https://github.com/leanprover/doc-gen4"
+rev = "main"
+
 [[lean_lib]]
 name = "Lapis"
 
