@@ -92,3 +92,10 @@ def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit 
 - [x] Thread-safe channels (unbounded, bounded, oneshot)
 - [x] Document snapshots with reference counting for concurrent access
 - [x] Actor supervision and lifecycle management
+
+### Server Utilities
+- [x] Progress reporting API with token lifecycle management
+- [x] Workspace edit support (`workspace/applyEdit`) with builder pattern
+- [x] Debounced diagnostics with per-document scheduling
+- [x] Dynamic capability registration (`client/registerCapability`)
+- [x] File watcher registration helpers

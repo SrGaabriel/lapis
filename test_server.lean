@@ -7,6 +7,10 @@ open Lapis.Server.Monad
 open Lapis.Server.Builder
 open Lapis.Server.Dispatcher
 open Lapis.Server.Documents
+open Lapis.Server.Progress
+open Lapis.Server.WorkspaceEdit
+open Lapis.Server.Diagnostics
+open Lapis.Server.Registration
 
 structure TestState where
   requestCount : Nat := 0
@@ -97,6 +101,37 @@ def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit 
 
 def handleDidChange (params : DidChangeTextDocumentParams) : ServerM TestState Unit := do
   updateDiagnostics params.textDocument.uri
+
+def handleTestEdit (params : HoverParams) : ServerM TestState (Option Hover) := do
+  let _edit := WorkspaceEditBuilder.new
+    |>.replace params.textDocument.uri
+        { start := { line := 0, character := 0 }, «end» := { line := 0, character := 5 } }
+        "REPLACED"
+    |>.insert params.textDocument.uri { line := 1, character := 0 } "INSERTED\n"
+    |>.build
+
+  return some {
+    contents := {
+      kind := .markdown
+      value := "WorkspaceEditBuilder test - edit created successfully"
+    }
+  }
+
+def testDiagnosticBuilder : Array Diagnostic :=
+  DiagnosticBuilder.new (source := some "test-server")
+    |>.error
+        { start := { line := 0, character := 0 }, «end» := { line := 0, character := 5 } }
+        "Test error"
+    |>.warning
+        { start := { line := 1, character := 0 }, «end» := { line := 1, character := 5 } }
+        "Test warning"
+    |>.hint
+        { start := { line := 2, character := 0 }, «end» := { line := 2, character := 5 } }
+        "Test hint"
+    |>.deprecated
+        { start := { line := 3, character := 0 }, «end» := { line := 3, character := 5 } }
+        "This is deprecated"
+    |>.build
 
 def main : IO Unit := do
   let config := ServerConfig.new "example-server" ({} : TestState)

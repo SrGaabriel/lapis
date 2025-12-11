@@ -11,5 +11,9 @@ import Lapis.Server.Monad
 import Lapis.Server.Builder
 import Lapis.Server.Dispatcher
 import Lapis.Server.Receiver
+import Lapis.Server.Progress
+import Lapis.Server.WorkspaceEdit
+import Lapis.Server.Diagnostics
+import Lapis.Server.Registration
 
 import Lapis.Concurrent
