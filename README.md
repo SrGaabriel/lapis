@@ -2,6 +2,8 @@
 
 A minimal, lightweight Language Server Protocol (LSP) framework in Lean 4.
 
+This is just a scaffold for building language servers in Lean 4. It provides the core LSP protocol handling, a virtual file system (VFS) for managing text documents, and utilities for common LSP tasks.
+
 ## 🎨 Usage
 
 This is a small example of a language server using lapis:
@@ -81,3 +83,12 @@ def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit 
 - [x] Helper methods for common operations (logging, messages, diagnostics)
 - [x] Generic configuration support for type-safe settings
 - [x] Builder pattern for server configuration
+
+### Concurrency
+- [x] Actor-based concurrency model with message passing
+- [x] Separate VFS and LSP actors for parallelism
+- [x] Per-request cancellation tokens
+- [x] Async request processing with bounded concurrency
+- [x] Thread-safe channels (unbounded, bounded, oneshot)
+- [x] Document snapshots with reference counting for concurrent access
+- [x] Actor supervision and lifecycle management

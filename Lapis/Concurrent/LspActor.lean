@@ -1,0 +1,454 @@
+/-
+  LSP Actor
+
+  Handles LSP request dispatch with:
+  - Concurrent request handling (bounded parallelism)
+  - Request cancellation support
+  - Response routing back to clients
+-/
+
+import Lapis.Concurrent.Actor
+import Lapis.Concurrent.VfsActor
+import Lapis.Protocol.JsonRpc
+import Lapis.Protocol.Types
+import Lapis.Protocol.Messages
+import Lapis.Protocol.Capabilities
+import Lapis.Transport.Base
+import Lapis.Server.Receiver
+import Std.Data.HashMap
+
+namespace Lapis.Concurrent.LspActor
+
+open Lean Json
+open Lapis.Concurrent.Actor
+open Lapis.Concurrent.Channel
+open Lapis.Concurrent.VfsActor
+open Lapis.Protocol.JsonRpc
+open Lapis.Protocol.Types
+open Lapis.Protocol.Messages
+open Lapis.Protocol.Capabilities
+open Lapis.Transport
+open Lapis.Server.Receiver
+open Std (HashMap)
+
+/-! ## Request Context -/
+
+/-- Context passed to request handlers -/
+structure RequestContext (UserState : Type) where
+  /-- VFS reference for document access -/
+  vfs : VfsRef
+  /-- Output channel for sending messages -/
+  outputChannel : OutputChannel
+  /-- Pending responses for server-initiated requests -/
+  pendingResponses : PendingResponses
+  /-- User-defined state (immutable snapshot) -/
+  userState : UserState
+  /-- Server capabilities -/
+  capabilities : ServerCapabilities
+  /-- Server info -/
+  serverInfo : ServerInfo
+  /-- Cancellation token for this request -/
+  cancelToken : IO.CancelToken
+
+namespace RequestContext
+
+/-- Check if request was cancelled -/
+def isCancelled (ctx : RequestContext UserState) : IO Bool :=
+  ctx.cancelToken.isSet
+
+/-- Get a document snapshot -/
+def getDocument (ctx : RequestContext UserState) (uri : DocumentUri) : IO (Option DocumentSnapshot) :=
+  ctx.vfs.getSnapshot uri
+
+/-- Get document content -/
+def getDocumentContent (ctx : RequestContext UserState) (uri : DocumentUri) : IO (Option String) :=
+  ctx.vfs.getContent uri
+
+/-- Get a line from a document -/
+def getDocumentLine (ctx : RequestContext UserState) (uri : DocumentUri) (line : Nat) : IO (Option String) :=
+  ctx.vfs.getLine uri line
+
+/-- Get word at position -/
+def getWordAt (ctx : RequestContext UserState) (uri : DocumentUri) (pos : Position) : IO (Option String) :=
+  ctx.vfs.getWordAt uri pos
+
+/-- Send a notification to the client -/
+def sendNotification (ctx : RequestContext UserState) (method : String) (params : Json) : IO Unit := do
+  let notif : NotificationMessage := { method, params := some params }
+  ctx.outputChannel.send (.notification notif)
+
+/-- Publish diagnostics -/
+def publishDiagnostics (ctx : RequestContext UserState) (params : PublishDiagnosticsParams) : IO Unit :=
+  ctx.sendNotification "textDocument/publishDiagnostics" (toJson params)
+
+/-- Log a message -/
+def logMessage (ctx : RequestContext UserState) (type : Nat) (message : String) : IO Unit :=
+  ctx.sendNotification "window/logMessage" (Json.mkObj [("type", type), ("message", message)])
+
+/-- Log info -/
+def logInfo (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.logMessage 3 message
+
+/-- Log warning -/
+def logWarning (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.logMessage 2 message
+
+/-- Log error -/
+def logError (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.logMessage 1 message
+
+/-- Show a message to the user -/
+def showMessage (ctx : RequestContext UserState) (type : Nat) (message : String) : IO Unit :=
+  ctx.sendNotification "window/showMessage" (Json.mkObj [("type", type), ("message", message)])
+
+/-- Show info message -/
+def showInfo (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.showMessage 3 message
+
+/-- Show warning message -/
+def showWarning (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.showMessage 2 message
+
+/-- Show error message -/
+def showError (ctx : RequestContext UserState) (message : String) : IO Unit :=
+  ctx.showMessage 1 message
+
+end RequestContext
+
+/-! ## Handler Types -/
+
+/-- Result of handling a request -/
+inductive HandlerResult where
+  | ok (result : Json)
+  | error (code : Int) (message : String)
+  deriving Inhabited
+
+/-- A request handler in the actor model -/
+def RequestHandler (UserState : Type) := RequestContext UserState → Json → IO HandlerResult
+
+/-- A notification handler in the actor model -/
+def NotificationHandler (UserState : Type) := RequestContext UserState → Json → IO Unit
+
+/-! ## LSP Messages -/
+
+/-- Messages for the LSP actor -/
+inductive LspMsg (UserState : Type) where
+  /-- Handle an incoming request -/
+  | request (msg : RequestMessage) (userState : UserState)
+  /-- Handle an incoming notification (non-document) -/
+  | notification (msg : NotificationMessage) (userState : UserState)
+  /-- Cancel a pending request -/
+  | cancelRequest (id : RequestId)
+  /-- Handle a response from the client -/
+  | response (id : RequestId) (result : Json)
+  /-- Handle an error response from the client -/
+  | errorResponse (id : RequestId) (error : String)
+  /-- Shutdown the actor -/
+  | shutdown
+
+/-! ## LSP Actor State -/
+
+/-- Pending request tracking -/
+structure PendingRequest where
+  id : RequestId
+  cancelToken : IO.CancelToken
+  task : Task (Except IO.Error Unit)
+
+/-- LSP Actor configuration -/
+structure LspConfig (UserState : Type) where
+  /-- Server name -/
+  name : String
+  /-- Server version -/
+  version : Option String := none
+  /-- Server capabilities -/
+  capabilities : ServerCapabilities := {}
+  /-- Request handlers by method -/
+  requestHandlers : HashMap String (RequestHandler UserState) := {}
+  /-- Notification handlers by method -/
+  notificationHandlers : HashMap String (NotificationHandler UserState) := {}
+  /-- Maximum concurrent requests -/
+  maxConcurrentRequests : Nat := 8
+
+/-- LSP Actor state -/
+structure LspState (UserState : Type) where
+  /-- Server initialized -/
+  initialized : Bool := false
+  /-- Shutdown requested -/
+  shutdownRequested : Bool := false
+  /-- Pending requests -/
+  pendingRequests : HashMap String PendingRequest := {}
+  /-- Count of active requests -/
+  activeRequests : Nat := 0
+
+/-! ## LSP Actor Reference -/
+
+/-- Handle to the LSP actor -/
+structure LspRef (UserState : Type) where
+  ref : ActorRef (LspMsg UserState)
+
+namespace LspRef
+
+/-- Send a request to be handled -/
+def handleRequest (lsp : LspRef UserState) (msg : RequestMessage) (userState : UserState) : IO Unit :=
+  lsp.ref.send (.request msg userState)
+
+/-- Send a notification to be handled -/
+def handleNotification (lsp : LspRef UserState) (msg : NotificationMessage) (userState : UserState) : IO Unit :=
+  lsp.ref.send (.notification msg userState)
+
+/-- Cancel a request -/
+def cancelRequest (lsp : LspRef UserState) (id : RequestId) : IO Unit :=
+  lsp.ref.send (.cancelRequest id)
+
+/-- Handle a response from client -/
+def handleResponse (lsp : LspRef UserState) (id : RequestId) (result : Json) : IO Unit :=
+  lsp.ref.send (.response id result)
+
+/-- Handle an error response from client -/
+def handleErrorResponse (lsp : LspRef UserState) (id : RequestId) (error : String) : IO Unit :=
+  lsp.ref.send (.errorResponse id error)
+
+/-- Shutdown the actor -/
+def shutdown (lsp : LspRef UserState) : IO Unit :=
+  lsp.ref.send .shutdown
+
+end LspRef
+
+/-! ## LSP Actor Context -/
+
+/-- Runtime context for the LSP actor -/
+structure LspRuntime (UserState : Type) where
+  config : LspConfig UserState
+  vfs : VfsRef
+  outputChannel : OutputChannel
+  pendingResponses : PendingResponses
+
+/-! ## Built-in Handlers -/
+
+/-- Handle initialize request -/
+private def handleInitialize (rt : LspRuntime UserState) (_params : InitializeParams) : IO InitializeResult := do
+  return {
+    capabilities := rt.config.capabilities
+    serverInfo := some { name := rt.config.name, version := rt.config.version }
+  }
+
+/-! ## LSP Actor Implementation -/
+
+/-- Process a request asynchronously -/
+private def processRequest (rt : LspRuntime UserState) (state : LspState UserState)
+    (msg : RequestMessage) (userState : UserState) : IO (LspState UserState) := do
+  let idStr := toString msg.id
+  let cancelToken ← IO.CancelToken.new
+
+  let ctx : RequestContext UserState := {
+    vfs := rt.vfs
+    outputChannel := rt.outputChannel
+    pendingResponses := rt.pendingResponses
+    userState := userState
+    capabilities := rt.config.capabilities
+    serverInfo := { name := rt.config.name, version := rt.config.version }
+    cancelToken := cancelToken
+  }
+
+  let task ← IO.asTask (prio := .default) do
+    try
+      -- Check cancellation before starting
+      if ← cancelToken.isSet then
+        rt.outputChannel.send (mkErrorResponse (some msg.id) requestCancelled "Request cancelled")
+        return
+
+      let response ← match msg.method with
+        | "initialize" =>
+          match msg.params with
+          | none => pure (mkInvalidParams msg.id "Missing params")
+          | some params =>
+            match FromJson.fromJson? params with
+            | .error e => pure (mkInvalidParams msg.id s!"Invalid params: {e}")
+            | .ok initParams =>
+              let result ← handleInitialize rt initParams
+              pure (mkResponse msg.id (toJson result))
+
+        | "shutdown" =>
+          pure (mkResponse msg.id Json.null)
+
+        | method =>
+          match rt.config.requestHandlers.get? method with
+          | none => pure (mkMethodNotFound msg.id method)
+          | some handler =>
+            let params := msg.params.getD (Json.mkObj [])
+            match ← handler ctx params with
+            | .ok result => pure (mkResponse msg.id result)
+            | .error code message => pure (mkErrorResponse (some msg.id) code message)
+
+      -- Check cancellation before sending response
+      if ← cancelToken.isSet then
+        rt.outputChannel.send (mkErrorResponse (some msg.id) requestCancelled "Request cancelled")
+      else
+        rt.outputChannel.send response
+
+    catch e =>
+      rt.outputChannel.send (mkInternalError (some msg.id) s!"Handler error: {e}")
+
+  let pending : PendingRequest := { id := msg.id, cancelToken, task }
+  return { state with
+    pendingRequests := state.pendingRequests.insert idStr pending
+    activeRequests := state.activeRequests + 1
+  }
+
+/-- Process a notification -/
+private def processNotification (rt : LspRuntime UserState) (state : LspState UserState)
+    (msg : NotificationMessage) (userState : UserState) : IO (LspState UserState) := do
+  -- Create context for handler
+  let cancelToken ← IO.CancelToken.new
+  let ctx : RequestContext UserState := {
+    vfs := rt.vfs
+    outputChannel := rt.outputChannel
+    pendingResponses := rt.pendingResponses
+    userState := userState
+    capabilities := rt.config.capabilities
+    serverInfo := { name := rt.config.name, version := rt.config.version }
+    cancelToken := cancelToken
+  }
+
+  -- Handle built-in notifications
+  match msg.method with
+  | "initialized" =>
+    return { state with initialized := true }
+
+  | _ =>
+    -- Try user handler
+    if let some handler := rt.config.notificationHandlers.get? msg.method then
+      let params := msg.params.getD (Json.mkObj [])
+      -- Run notification handlers async (fire and forget)
+      let _ ← IO.asTask (prio := .default) do
+        try
+          handler ctx params
+        catch _ =>
+          pure ()
+    return state
+
+/-- Handle the LSP actor message -/
+private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState)
+    (msg : LspMsg UserState) : IO (HandleResult (LspState UserState)) := do
+  match msg with
+  | .request reqMsg userState =>
+    -- Check if initialized (except for initialize)
+    if reqMsg.method != "initialize" && !state.initialized then
+      rt.outputChannel.send (mkErrorResponse (some reqMsg.id) serverNotInitialized "Server not initialized")
+      return .continue state
+
+    -- Track shutdown
+    let state := if reqMsg.method == "shutdown" then
+      { state with shutdownRequested := true }
+    else
+      state
+
+    let newState ← processRequest rt state reqMsg userState
+    return .continue newState
+
+  | .notification notifMsg userState =>
+    let newState ← processNotification rt state notifMsg userState
+    return .continue newState
+
+  | .cancelRequest id =>
+    let idStr := toString id
+    match state.pendingRequests.get? idStr with
+    | some pending =>
+      pending.cancelToken.set
+      return .continue { state with pendingRequests := state.pendingRequests.erase idStr }
+    | none =>
+      return .continue state
+
+  | .response id result =>
+    rt.pendingResponses.execute id result
+    return .continue state
+
+  | .errorResponse id error =>
+    rt.pendingResponses.executeError id error
+    return .continue state
+
+  | .shutdown =>
+    return .stop
+
+/-! ## Spawn LSP Actor -/
+
+/-- Spawn the LSP actor -/
+def spawnLspActor (config : LspConfig UserState) (vfs : VfsRef)
+    (outputChannel : OutputChannel) (pendingResponses : PendingResponses)
+    : IO (Actor (LspMsg UserState) (LspState UserState) × LspRef UserState) := do
+
+  let rt : LspRuntime UserState := {
+    config := config
+    vfs := vfs
+    outputChannel := outputChannel
+    pendingResponses := pendingResponses
+  }
+
+  let initialState : LspState UserState := {}
+
+  let actor ← spawn initialState (handleLspMsg rt) { name := "lsp" }
+  let lspRef : LspRef UserState := { ref := actor.ref }
+
+  return (actor, lspRef)
+
+/-! ## Config Builder -/
+
+namespace LspConfig
+
+/-- Create a new LSP config -/
+def new (name : String) : LspConfig UserState :=
+  { name }
+
+/-- Set version -/
+def withVersion (config : LspConfig UserState) (version : String) : LspConfig UserState :=
+  { config with version := some version }
+
+/-- Set capabilities -/
+def withCapabilities (config : LspConfig UserState) (caps : ServerCapabilities) : LspConfig UserState :=
+  { config with capabilities := caps }
+
+/-- Add a request handler -/
+def onRequest [FromJson Params] [ToJson Result]
+    (config : LspConfig UserState)
+    (method : String)
+    (handler : RequestContext UserState → Params → IO Result) : LspConfig UserState :=
+  let wrappedHandler : RequestHandler UserState := fun ctx json => do
+    match FromJson.fromJson? json with
+    | .error e => return .error invalidParams s!"Invalid params: {e}"
+    | .ok params =>
+      let result ← handler ctx params
+      return .ok (toJson result)
+  { config with requestHandlers := config.requestHandlers.insert method wrappedHandler }
+
+/-- Add a request handler that can return null -/
+def onRequestOpt [FromJson Params] [ToJson Result]
+    (config : LspConfig UserState)
+    (method : String)
+    (handler : RequestContext UserState → Params → IO (Option Result)) : LspConfig UserState :=
+  let wrappedHandler : RequestHandler UserState := fun ctx json => do
+    match FromJson.fromJson? json with
+    | .error e => return .error invalidParams s!"Invalid params: {e}"
+    | .ok params =>
+      match ← handler ctx params with
+      | none => return .ok Json.null
+      | some result => return .ok (toJson result)
+  { config with requestHandlers := config.requestHandlers.insert method wrappedHandler }
+
+/-- Add a notification handler -/
+def onNotification [FromJson Params]
+    (config : LspConfig UserState)
+    (method : String)
+    (handler : RequestContext UserState → Params → IO Unit) : LspConfig UserState :=
+  let wrappedHandler : NotificationHandler UserState := fun ctx json => do
+    match FromJson.fromJson? json with
+    | .error _ => pure ()
+    | .ok params => handler ctx params
+  { config with notificationHandlers := config.notificationHandlers.insert method wrappedHandler }
+
+/-- Set max concurrent requests -/
+def withMaxConcurrentRequests (config : LspConfig UserState) (n : Nat) : LspConfig UserState :=
+  { config with maxConcurrentRequests := n }
+
+end LspConfig
+
+end Lapis.Concurrent.LspActor
