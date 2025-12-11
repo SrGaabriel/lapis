@@ -102,6 +102,87 @@ def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit 
 def handleDidChange (params : DidChangeTextDocumentParams) : ServerM TestState Unit := do
   updateDiagnostics params.textDocument.uri
 
+/-- Handler that triggers progress reporting for testing -/
+def handleProgress (_params : Lean.Json) : ServerM TestState Lean.Json := do
+  -- Send progress begin
+  sendNotification "$/progress" (Lean.Json.mkObj [
+    ("token", Lean.Json.str "test-progress-1"),
+    ("value", Lean.Json.mkObj [
+      ("kind", Lean.Json.str "begin"),
+      ("title", Lean.Json.str "Test Operation"),
+      ("percentage", Lean.Json.num 0)
+    ])
+  ])
+
+  -- Send progress report
+  sendNotification "$/progress" (Lean.Json.mkObj [
+    ("token", Lean.Json.str "test-progress-1"),
+    ("value", Lean.Json.mkObj [
+      ("kind", Lean.Json.str "report"),
+      ("message", Lean.Json.str "Processing..."),
+      ("percentage", Lean.Json.num 50)
+    ])
+  ])
+
+  -- Send progress end
+  sendNotification "$/progress" (Lean.Json.mkObj [
+    ("token", Lean.Json.str "test-progress-1"),
+    ("value", Lean.Json.mkObj [
+      ("kind", Lean.Json.str "end"),
+      ("message", Lean.Json.str "Complete")
+    ])
+  ])
+
+  return Lean.Json.mkObj [("success", Lean.Json.bool true)]
+
+/-- Handler that triggers workspace/applyEdit for testing -/
+def handleApplyEdit (params : Lean.Json) : ServerM TestState Lean.Json := do
+  let uri := params.getObjValAs? String "uri" |>.toOption |>.getD "file:///test.txt"
+  let newText := params.getObjValAs? String "newText" |>.toOption |>.getD "inserted text"
+
+  -- Build a workspace edit
+  let edit := WorkspaceEditBuilder.new
+    |>.insert uri { line := 0, character := 0 } newText
+    |>.build
+
+  -- Send workspace/applyEdit request to client
+  let promise ← sendRequest "workspace/applyEdit" (Lean.Json.mkObj [
+    ("label", Lean.Json.str "Test Edit"),
+    ("edit", Lean.toJson edit)
+  ])
+
+  -- Wait for response (with timeout handling in real code)
+  let some result := promise.result?.get
+    | return Lean.Json.mkObj [("success", Lean.Json.bool false), ("error", Lean.Json.str "No response")]
+
+  return Lean.Json.mkObj [("success", Lean.Json.bool true), ("result", result)]
+
+/-- Handler that triggers client/registerCapability for testing -/
+def handleRegisterCapability (_params : Lean.Json) : ServerM TestState Lean.Json := do
+  -- Register a file watcher capability
+  let registration := Lean.Json.mkObj [
+    ("id", Lean.Json.str "test-file-watcher-1"),
+    ("method", Lean.Json.str "workspace/didChangeWatchedFiles"),
+    ("registerOptions", Lean.Json.mkObj [
+      ("watchers", Lean.Json.arr #[
+        Lean.Json.mkObj [
+          ("globPattern", Lean.Json.str "**/*.test"),
+          ("kind", Lean.Json.num 7)  -- Create | Change | Delete
+        ]
+      ])
+    ])
+  ]
+
+  let promise ← sendRequest "client/registerCapability" (Lean.Json.mkObj [
+    ("registrations", Lean.Json.arr #[registration])
+  ])
+
+  let some result := promise.result?.get
+    | return Lean.Json.mkObj [("success", Lean.Json.bool false), ("error", Lean.Json.str "No response")]
+
+  -- null response means success
+  return Lean.Json.mkObj [("success", Lean.Json.bool true), ("result", result)]
+
 def handleTestEdit (params : HoverParams) : ServerM TestState (Option Hover) := do
   let _edit := WorkspaceEditBuilder.new
     |>.replace params.textDocument.uri
@@ -152,5 +233,9 @@ def main : IO Unit := do
     |>.onRequest "textDocument/completion" handleCompletion
     |>.onNotification "textDocument/didOpen" handleDidOpen
     |>.onNotification "textDocument/didChange" handleDidChange
+    -- Test handlers for server-initiated features
+    |>.onRequest "test/progress" handleProgress
+    |>.onRequest "test/applyEdit" handleApplyEdit
+    |>.onRequest "test/registerCapability" handleRegisterCapability
 
   runStdio config
