@@ -13,3 +13,7 @@ name = "Lapis"
 [[lean_exe]]
 name = "test"
 root = "test_server"
+
+[[lean_exe]]
+name = "example"
+root = "example"
