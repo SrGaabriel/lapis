@@ -41,8 +41,8 @@ structure RequestContext (UserState : Type) where
   outputChannel : OutputChannel
   /-- Pending responses for server-initiated requests -/
   pendingResponses : PendingResponses
-  /-- User-defined state (immutable snapshot) -/
-  userState : UserState
+  /-- Mutable user state reference -/
+  userStateRef : IO.Ref UserState
   /-- Server capabilities -/
   capabilities : ServerCapabilities
   /-- Server info -/
@@ -55,6 +55,18 @@ namespace RequestContext
 /-- Check if request was cancelled -/
 def isCancelled (ctx : RequestContext UserState) : IO Bool :=
   ctx.cancelToken.isSet
+
+/-- Get user state -/
+def getUserState (ctx : RequestContext UserState) : IO UserState :=
+  ctx.userStateRef.get
+
+/-- Set user state -/
+def setUserState (ctx : RequestContext UserState) (state : UserState) : IO Unit :=
+  ctx.userStateRef.set state
+
+/-- Modify user state -/
+def modifyUserState (ctx : RequestContext UserState) (f : UserState → UserState) : IO Unit :=
+  ctx.userStateRef.modify f
 
 /-- Get a document snapshot -/
 def getDocument (ctx : RequestContext UserState) (uri : DocumentUri) : IO (Option DocumentSnapshot) :=
@@ -76,6 +88,13 @@ def getWordAt (ctx : RequestContext UserState) (uri : DocumentUri) (pos : Positi
 def sendNotification (ctx : RequestContext UserState) (method : String) (params : Json) : IO Unit := do
   let notif : NotificationMessage := { method, params := some params }
   ctx.outputChannel.send (.notification notif)
+
+/-- Send a request to the client -/
+def sendRequest (ctx : RequestContext UserState) (method : String) (params : Json) : IO (IO.Promise Json) := do
+  let promise ← IO.Promise.new
+  let requestId ← ctx.pendingResponses.register promise
+  ctx.outputChannel.sendRequest requestId method params
+  return promise
 
 /-- Publish diagnostics -/
 def publishDiagnostics (ctx : RequestContext UserState) (params : PublishDiagnosticsParams) : IO Unit :=
@@ -134,9 +153,9 @@ def NotificationHandler (UserState : Type) := RequestContext UserState → Json 
 /-- Messages for the LSP actor -/
 inductive LspMsg (UserState : Type) where
   /-- Handle an incoming request -/
-  | request (msg : RequestMessage) (userState : UserState)
+  | request (msg : RequestMessage)
   /-- Handle an incoming notification (non-document) -/
-  | notification (msg : NotificationMessage) (userState : UserState)
+  | notification (msg : NotificationMessage)
   /-- Cancel a pending request -/
   | cancelRequest (id : RequestId)
   /-- Handle a response from the client -/
@@ -189,12 +208,12 @@ structure LspRef (UserState : Type) where
 namespace LspRef
 
 /-- Send a request to be handled -/
-def handleRequest (lsp : LspRef UserState) (msg : RequestMessage) (userState : UserState) : IO Unit :=
-  lsp.ref.send (.request msg userState)
+def handleRequest (lsp : LspRef UserState) (msg : RequestMessage) : IO Unit :=
+  lsp.ref.send (.request msg)
 
 /-- Send a notification to be handled -/
-def handleNotification (lsp : LspRef UserState) (msg : NotificationMessage) (userState : UserState) : IO Unit :=
-  lsp.ref.send (.notification msg userState)
+def handleNotification (lsp : LspRef UserState) (msg : NotificationMessage) : IO Unit :=
+  lsp.ref.send (.notification msg)
 
 /-- Cancel a request -/
 def cancelRequest (lsp : LspRef UserState) (id : RequestId) : IO Unit :=
@@ -222,6 +241,7 @@ structure LspRuntime (UserState : Type) where
   vfs : VfsRef
   outputChannel : OutputChannel
   pendingResponses : PendingResponses
+  userStateRef : IO.Ref UserState
 
 /-! ## Built-in Handlers -/
 
@@ -236,7 +256,7 @@ private def handleInitialize (rt : LspRuntime UserState) (_params : InitializePa
 
 /-- Process a request asynchronously -/
 private def processRequest (rt : LspRuntime UserState) (state : LspState UserState)
-    (msg : RequestMessage) (userState : UserState) : IO (LspState UserState) := do
+    (msg : RequestMessage) : IO (LspState UserState) := do
   let idStr := toString msg.id
   let cancelToken ← IO.CancelToken.new
 
@@ -244,7 +264,7 @@ private def processRequest (rt : LspRuntime UserState) (state : LspState UserSta
     vfs := rt.vfs
     outputChannel := rt.outputChannel
     pendingResponses := rt.pendingResponses
-    userState := userState
+    userStateRef := rt.userStateRef
     capabilities := rt.config.capabilities
     serverInfo := { name := rt.config.name, version := rt.config.version }
     cancelToken := cancelToken
@@ -297,14 +317,14 @@ private def processRequest (rt : LspRuntime UserState) (state : LspState UserSta
 
 /-- Process a notification -/
 private def processNotification (rt : LspRuntime UserState) (state : LspState UserState)
-    (msg : NotificationMessage) (userState : UserState) : IO (LspState UserState) := do
+    (msg : NotificationMessage) : IO (LspState UserState) := do
   -- Create context for handler
   let cancelToken ← IO.CancelToken.new
   let ctx : RequestContext UserState := {
     vfs := rt.vfs
     outputChannel := rt.outputChannel
     pendingResponses := rt.pendingResponses
-    userState := userState
+    userStateRef := rt.userStateRef
     capabilities := rt.config.capabilities
     serverInfo := { name := rt.config.name, version := rt.config.version }
     cancelToken := cancelToken
@@ -331,7 +351,7 @@ private def processNotification (rt : LspRuntime UserState) (state : LspState Us
 private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState)
     (msg : LspMsg UserState) : IO (HandleResult (LspState UserState)) := do
   match msg with
-  | .request reqMsg userState =>
+  | .request reqMsg =>
     -- Check if initialized (except for initialize)
     if reqMsg.method != "initialize" && !state.initialized then
       rt.outputChannel.send (mkErrorResponse (some reqMsg.id) serverNotInitialized "Server not initialized")
@@ -343,11 +363,11 @@ private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState
     else
       state
 
-    let newState ← processRequest rt state reqMsg userState
+    let newState ← processRequest rt state reqMsg
     return .continue newState
 
-  | .notification notifMsg userState =>
-    let newState ← processNotification rt state notifMsg userState
+  | .notification notifMsg =>
+    let newState ← processNotification rt state notifMsg
     return .continue newState
 
   | .cancelRequest id =>
@@ -375,6 +395,7 @@ private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState
 /-- Spawn the LSP actor -/
 def spawnLspActor (config : LspConfig UserState) (vfs : VfsRef)
     (outputChannel : OutputChannel) (pendingResponses : PendingResponses)
+    (userStateRef : IO.Ref UserState)
     : IO (Actor (LspMsg UserState) (LspState UserState) × LspRef UserState) := do
 
   let rt : LspRuntime UserState := {
@@ -382,6 +403,7 @@ def spawnLspActor (config : LspConfig UserState) (vfs : VfsRef)
     vfs := vfs
     outputChannel := outputChannel
     pendingResponses := pendingResponses
+    userStateRef := userStateRef
   }
 
   let initialState : LspState UserState := {}

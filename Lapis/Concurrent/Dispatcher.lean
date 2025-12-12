@@ -103,13 +103,11 @@ private def routeNotification (rt : ServerRuntime UserState) (msg : Notification
 
   -- Everything else goes to LSP actor
   | _ =>
-    let userState ← rt.getUserState
-    rt.lsp.handleNotification msg userState
+    rt.lsp.handleNotification msg
 
 /-- Route a request to the LSP actor -/
 private def routeRequest (rt : ServerRuntime UserState) (msg : RequestMessage) : IO Unit := do
-  let userState ← rt.getUserState
-  rt.lsp.handleRequest msg userState
+  rt.lsp.handleRequest msg
 
 /-- Route a response to the LSP actor -/
 private def routeResponse (rt : ServerRuntime UserState) (id : RequestId) (result : Json) : IO Unit := do
@@ -176,7 +174,7 @@ def createRuntime [Transport T] (transport : T) (config : LspConfig UserState)
   let (vfsActor, vfs) ← spawnVfsActor
 
   -- Spawn LSP actor
-  let (lspActor, lsp) ← spawnLspActor config vfs outputChannel pendingResponses
+  let (lspActor, lsp) ← spawnLspActor config vfs outputChannel pendingResponses userStateRef
 
   return {
     vfsActor, vfs

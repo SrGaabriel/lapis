@@ -2,6 +2,7 @@ import Lapis.Concurrent.Channel
 import Lapis.Concurrent.Actor
 import Lapis.Concurrent.VfsActor
 import Lapis.Concurrent.LspActor
+import Lapis.Concurrent.Dispatcher
 
 namespace Lapis.Concurrent
 
@@ -9,10 +10,13 @@ namespace Lapis.Concurrent
 export Channel (Unbounded Bounded Oneshot)
 export Actor (ActorRef Actor ActorStatus ActorConfig HandleResult spawn)
 
--- VFS actor (used internally by ServerM)
+-- VFS actor
 export VfsActor (VfsRef DocumentSnapshot VfsMsg spawnVfsActor)
 
--- LspConfig API (alternative to ServerConfig, gives direct RequestContext access)
+-- LSP actor and config
 export LspActor (LspConfig LspRef RequestContext HandlerResult spawnLspActor)
+
+-- Server runtime and entry point
+export Dispatcher (ServerRuntime runStdio runServer)
 
 end Lapis.Concurrent

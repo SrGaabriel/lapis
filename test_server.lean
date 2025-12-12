@@ -3,9 +3,9 @@ import Lapis
 open Lapis.Protocol.Types
 open Lapis.Protocol.Messages
 open Lapis.Protocol.Capabilities
-open Lapis.Server.Monad
-open Lapis.Server.Builder
-open Lapis.Server.Dispatcher
+open Lapis.Concurrent.LspActor
+open Lapis.Concurrent.Dispatcher
+open Lapis.Concurrent.VfsActor
 open Lapis.Server.Progress
 open Lapis.Server.WorkspaceEdit
 open Lapis.Server.Diagnostics
@@ -55,25 +55,25 @@ def computeDiagnostics (content : String) : Array Diagnostic := Id.run do
       }
   return diagnostics
 
-def updateDiagnostics (uri : DocumentUri) : ServerM TestState Unit := do
-  let some snapshot ← getDocumentSnapshot uri | return
+def updateDiagnostics (ctx : RequestContext TestState) (uri : DocumentUri) : IO Unit := do
+  let some snapshot ← ctx.getDocument uri | return
   let diagnostics := computeDiagnostics snapshot.content
-  publishDiagnostics {
+  ctx.publishDiagnostics {
     uri := uri
     version := some snapshot.version
     diagnostics := diagnostics
   }
 
-def handleHover (params : HoverParams) : ServerM TestState (Option Hover) := do
-  modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
+def handleHover (ctx : RequestContext TestState) (params : HoverParams) : IO (Option Hover) := do
+  ctx.modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some _snapshot ← getDocumentSnapshot params.textDocument.uri
+  let some _snapshot ← ctx.getDocument params.textDocument.uri
     | return none
 
-  let some word ← getDocumentWordAt params.textDocument.uri params.position
+  let some word ← ctx.getWordAt params.textDocument.uri params.position
     | return none
 
-  let count ← getUserState
+  let count ← ctx.getUserState
   return some {
     contents := {
       kind := .markdown
@@ -82,7 +82,7 @@ def handleHover (params : HoverParams) : ServerM TestState (Option Hover) := do
     range := none
   }
 
-def handleCompletion (_params : CompletionParams) : ServerM TestState CompletionList := do
+def handleCompletion (_ctx : RequestContext TestState) (_params : CompletionParams) : IO CompletionList := do
   return {
     isIncomplete := false
     items := #[
@@ -93,17 +93,17 @@ def handleCompletion (_params : CompletionParams) : ServerM TestState Completion
     ]
   }
 
-def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit := do
-  showInfo "Document opened!"
-  updateDiagnostics params.textDocument.uri
+def handleDidOpen (ctx : RequestContext TestState) (params : DidOpenTextDocumentParams) : IO Unit := do
+  ctx.showInfo "Document opened!"
+  updateDiagnostics ctx params.textDocument.uri
 
-def handleDidChange (params : DidChangeTextDocumentParams) : ServerM TestState Unit := do
-  updateDiagnostics params.textDocument.uri
+def handleDidChange (ctx : RequestContext TestState) (params : DidChangeTextDocumentParams) : IO Unit := do
+  updateDiagnostics ctx params.textDocument.uri
 
 /-- Handler that triggers progress reporting for testing -/
-def handleProgress (_params : Lean.Json) : ServerM TestState Lean.Json := do
+def handleProgress (ctx : RequestContext TestState) (_params : Lean.Json) : IO Lean.Json := do
   -- Send progress begin
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "test-progress-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "begin"),
@@ -113,7 +113,7 @@ def handleProgress (_params : Lean.Json) : ServerM TestState Lean.Json := do
   ])
 
   -- Send progress report
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "test-progress-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "report"),
@@ -123,7 +123,7 @@ def handleProgress (_params : Lean.Json) : ServerM TestState Lean.Json := do
   ])
 
   -- Send progress end
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "test-progress-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "end"),
@@ -134,7 +134,7 @@ def handleProgress (_params : Lean.Json) : ServerM TestState Lean.Json := do
   return Lean.Json.mkObj [("success", Lean.Json.bool true)]
 
 /-- Handler that triggers workspace/applyEdit for testing -/
-def handleApplyEdit (params : Lean.Json) : ServerM TestState Lean.Json := do
+def handleApplyEdit (ctx : RequestContext TestState) (params : Lean.Json) : IO Lean.Json := do
   let uri := params.getObjValAs? String "uri" |>.toOption |>.getD "file:///test.txt"
   let newText := params.getObjValAs? String "newText" |>.toOption |>.getD "inserted text"
 
@@ -144,7 +144,7 @@ def handleApplyEdit (params : Lean.Json) : ServerM TestState Lean.Json := do
     |>.build
 
   -- Send workspace/applyEdit request to client
-  let promise ← sendRequest "workspace/applyEdit" (Lean.Json.mkObj [
+  let promise ← ctx.sendRequest "workspace/applyEdit" (Lean.Json.mkObj [
     ("label", Lean.Json.str "Test Edit"),
     ("edit", Lean.toJson edit)
   ])
@@ -156,7 +156,7 @@ def handleApplyEdit (params : Lean.Json) : ServerM TestState Lean.Json := do
   return Lean.Json.mkObj [("success", Lean.Json.bool true), ("result", result)]
 
 /-- Handler that triggers client/registerCapability for testing -/
-def handleRegisterCapability (_params : Lean.Json) : ServerM TestState Lean.Json := do
+def handleRegisterCapability (ctx : RequestContext TestState) (_params : Lean.Json) : IO Lean.Json := do
   -- Register a file watcher capability
   let registration := Lean.Json.mkObj [
     ("id", Lean.Json.str "test-file-watcher-1"),
@@ -171,7 +171,7 @@ def handleRegisterCapability (_params : Lean.Json) : ServerM TestState Lean.Json
     ])
   ]
 
-  let promise ← sendRequest "client/registerCapability" (Lean.Json.mkObj [
+  let promise ← ctx.sendRequest "client/registerCapability" (Lean.Json.mkObj [
     ("registrations", Lean.Json.arr #[registration])
   ])
 
@@ -181,7 +181,7 @@ def handleRegisterCapability (_params : Lean.Json) : ServerM TestState Lean.Json
   -- null response means success
   return Lean.Json.mkObj [("success", Lean.Json.bool true), ("result", result)]
 
-def handleTestEdit (params : HoverParams) : ServerM TestState (Option Hover) := do
+def handleTestEdit (ctx : RequestContext TestState) (params : HoverParams) : IO (Option Hover) := do
   let _edit := WorkspaceEditBuilder.new
     |>.replace params.textDocument.uri
         { start := { line := 0, character := 0 }, «end» := { line := 0, character := 5 } }
@@ -213,7 +213,7 @@ def testDiagnosticBuilder : Array Diagnostic :=
     |>.build
 
 def main : IO Unit := do
-  let config := ServerConfig.new "example-server" ({} : TestState)
+  let config : LspConfig TestState := LspConfig.new "example-server"
     |>.withVersion "0.1.0"
     |>.withCapabilities {
       textDocumentSync := some {
@@ -236,4 +236,4 @@ def main : IO Unit := do
     |>.onRequest "test/applyEdit" handleApplyEdit
     |>.onRequest "test/registerCapability" handleRegisterCapability
 
-  runStdio config
+  runStdio config ({} : TestState)

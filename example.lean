@@ -18,9 +18,9 @@ import Lapis
 open Lapis.Protocol.Types
 open Lapis.Protocol.Messages
 open Lapis.Protocol.Capabilities
-open Lapis.Server.Monad
-open Lapis.Server.Builder
-open Lapis.Server.Dispatcher
+open Lapis.Concurrent.LspActor
+open Lapis.Concurrent.Dispatcher
+open Lapis.Concurrent.VfsActor
 open Lapis.Server.Progress
 open Lapis.Server.WorkspaceEdit
 open Lapis.Server.Diagnostics
@@ -112,12 +112,12 @@ def computeDiagnostics (uri : String) (content : String) (maxDiag : Nat) : Array
   if result.size > maxDiag then result.toSubarray.toArray.shrink maxDiag else result
 
 /-- Update and publish diagnostics for a document -/
-def updateDiagnostics (uri : String) : ServerM MyState Unit := do
-  let some content ← getDocumentContent uri | return
-  let state ← getUserState
+def updateDiagnostics (ctx : RequestContext MyState) (uri : String) : IO Unit := do
+  let some content ← ctx.getDocumentContent uri | return
+  let state ← ctx.getUserState
   let diagnostics := computeDiagnostics uri content state.maxDiagnostics
-  let some snapshot ← getDocumentSnapshot uri | return
-  publishDiagnostics { uri, version := some snapshot.version, diagnostics }
+  let some snapshot ← ctx.getDocument uri | return
+  ctx.publishDiagnostics { uri, version := some snapshot.version, diagnostics }
 
 /-! ## Symbol Extraction -/
 
@@ -141,14 +141,14 @@ def extractSymbols (uri : String) (content : String) : List (String × String ×
 /-! ## Request Handlers -/
 
 /-- Handle textDocument/hover -/
-def handleHover (params : HoverParams) : ServerM MyState (Option Hover) := do
-  modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
+def handleHover (ctx : RequestContext MyState) (params : HoverParams) : IO (Option Hover) := do
+  ctx.modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some content ← getDocumentContent params.textDocument.uri | return none
+  let some content ← ctx.getDocumentContent params.textDocument.uri | return none
   let some word ← pure (wordAtPosition content params.position) | return none
 
   -- Check if it's a known symbol
-  let state ← getUserState
+  let state ← ctx.getUserState
   let symbolInfo := state.symbols.find? fun (name, _, _) => name == word
 
   let hoverText := match symbolInfo with
@@ -166,10 +166,10 @@ def handleHover (params : HoverParams) : ServerM MyState (Option Hover) := do
   }
 
 /-- Handle textDocument/completion -/
-def handleCompletion (params : CompletionParams) : ServerM MyState CompletionList := do
-  modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
+def handleCompletion (ctx : RequestContext MyState) (_params : CompletionParams) : IO CompletionList := do
+  ctx.modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let state ← getUserState
+  let state ← ctx.getUserState
 
   -- Provide completions from known symbols
   let symbolItems := state.symbols.map fun (name, uri, pos) =>
@@ -196,13 +196,13 @@ def handleCompletion (params : CompletionParams) : ServerM MyState CompletionLis
   }
 
 /-- Handle textDocument/definition -/
-def handleDefinition (params : TextDocumentPositionParams) : ServerM MyState (Option Location) := do
-  modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
+def handleDefinition (ctx : RequestContext MyState) (params : TextDocumentPositionParams) : IO (Option Location) := do
+  ctx.modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some content ← getDocumentContent params.textDocument.uri | return none
+  let some content ← ctx.getDocumentContent params.textDocument.uri | return none
   let some word ← pure (wordAtPosition content params.position) | return none
 
-  let state ← getUserState
+  let state ← ctx.getUserState
   match state.symbols.find? fun (name, _, _) => name == word with
   | some (_, uri, pos) =>
     return some {
@@ -212,10 +212,10 @@ def handleDefinition (params : TextDocumentPositionParams) : ServerM MyState (Op
   | none => return none
 
 /-- Handle textDocument/references -/
-def handleReferences (params : ReferenceParams) : ServerM MyState (Array Location) := do
-  modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
+def handleReferences (ctx : RequestContext MyState) (params : ReferenceParams) : IO (Array Location) := do
+  ctx.modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some content ← getDocumentContent params.textDocument.uri | return #[]
+  let some content ← ctx.getDocumentContent params.textDocument.uri | return #[]
   let some word ← pure (wordAtPosition content params.position) | return #[]
 
   -- Find all occurrences of the word in the current document
@@ -227,13 +227,13 @@ def handleReferences (params : ReferenceParams) : ServerM MyState (Array Locatio
   }
 
 /-- Handle textDocument/documentSymbol -/
-def handleDocumentSymbol (params : Lean.Json) : ServerM MyState Lean.Json := do
+def handleDocumentSymbol (ctx : RequestContext MyState) (params : Lean.Json) : IO Lean.Json := do
   let uri := (do
     let td ← params.getObjVal? "textDocument"
     td.getObjValAs? String "uri"
   ) |>.toOption |>.getD ""
 
-  let some content ← getDocumentContent uri | return Lean.Json.arr #[]
+  let some content ← ctx.getDocumentContent uri | return Lean.Json.arr #[]
   let symbols := extractSymbols uri content
 
   let symbolInfos := symbols.map fun (name, _, pos) =>
@@ -252,13 +252,13 @@ def handleDocumentSymbol (params : Lean.Json) : ServerM MyState Lean.Json := do
   return Lean.Json.arr symbolInfos.toArray
 
 /-- Handle textDocument/codeAction -/
-def handleCodeAction (params : Lean.Json) : ServerM MyState Lean.Json := do
+def handleCodeAction (ctx : RequestContext MyState) (params : Lean.Json) : IO Lean.Json := do
   let uri := (do
     let td ← params.getObjVal? "textDocument"
     td.getObjValAs? String "uri"
   ) |>.toOption |>.getD ""
 
-  let some content ← getDocumentContent uri | return Lean.Json.arr #[]
+  let some content ← ctx.getDocumentContent uri | return Lean.Json.arr #[]
 
   -- Offer to convert TODO to DONE
   let mut actions : Array Lean.Json := #[]
@@ -287,56 +287,56 @@ def handleCodeAction (params : Lean.Json) : ServerM MyState Lean.Json := do
 /-! ## Notification Handlers -/
 
 /-- Handle textDocument/didOpen -/
-def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM MyState Unit := do
+def handleDidOpen (ctx : RequestContext MyState) (params : DidOpenTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
   let content := params.textDocument.text
 
   -- Extract and store symbols
   let newSymbols := extractSymbols uri content
-  modifyUserState fun s => { s with symbols := newSymbols ++ s.symbols }
+  ctx.modifyUserState fun s => { s with symbols := newSymbols ++ s.symbols }
 
   -- Publish diagnostics
-  updateDiagnostics uri
+  updateDiagnostics ctx uri
 
-  logInfo s!"Opened: {uri}"
+  ctx.logInfo s!"Opened: {uri}"
 
 /-- Handle textDocument/didChange -/
-def handleDidChange (params : DidChangeTextDocumentParams) : ServerM MyState Unit := do
+def handleDidChange (ctx : RequestContext MyState) (params : DidChangeTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
 
   -- Re-extract symbols
-  let some content ← getDocumentContent uri | return
+  let some content ← ctx.getDocumentContent uri | return
   let newSymbols := extractSymbols uri content
 
   -- Update symbol table (remove old symbols from this file, add new ones)
-  modifyUserState fun s =>
+  ctx.modifyUserState fun s =>
     { s with symbols := newSymbols ++ s.symbols.filter (fun (_, u, _) => u != uri) }
 
   -- Update diagnostics
-  updateDiagnostics uri
+  updateDiagnostics ctx uri
 
 /-- Handle textDocument/didClose -/
-def handleDidClose (params : DidCloseTextDocumentParams) : ServerM MyState Unit := do
+def handleDidClose (ctx : RequestContext MyState) (params : DidCloseTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
 
   -- Remove symbols from this file
-  modifyUserState fun s =>
+  ctx.modifyUserState fun s =>
     { s with symbols := s.symbols.filter (fun (_, u, _) => u != uri) }
 
   -- Clear diagnostics
-  clearDiagnostics uri
+  ctx.publishDiagnostics { uri, diagnostics := #[] }
 
-  logInfo s!"Closed: {uri}"
+  ctx.logInfo s!"Closed: {uri}"
 
 /-- Handle textDocument/didSave -/
-def handleDidSave (params : DidSaveTextDocumentParams) : ServerM MyState Unit := do
-  logInfo s!"Saved: {params.textDocument.uri}"
+def handleDidSave (ctx : RequestContext MyState) (params : DidSaveTextDocumentParams) : IO Unit := do
+  ctx.logInfo s!"Saved: {params.textDocument.uri}"
 
 /-! ## Custom Commands -/
 
 /-- Handle custom command to show server stats -/
-def handleStats (_params : Lean.Json) : ServerM MyState Lean.Json := do
-  let state ← getUserState
+def handleStats (ctx : RequestContext MyState) (_params : Lean.Json) : IO Lean.Json := do
+  let state ← ctx.getUserState
   return Lean.Json.mkObj [
     ("requestCount", Lean.Json.num state.requestCount),
     ("symbolCount", Lean.Json.num state.symbols.length),
@@ -344,13 +344,13 @@ def handleStats (_params : Lean.Json) : ServerM MyState Lean.Json := do
   ]
 
 /-- Handle custom command to trigger a refactoring with progress -/
-def handleRefactor (params : Lean.Json) : ServerM MyState Lean.Json := do
+def handleRefactor (ctx : RequestContext MyState) (params : Lean.Json) : IO Lean.Json := do
   let uri := params.getObjValAs? String "uri" |>.toOption |>.getD "file:///unknown"
   let oldName := params.getObjValAs? String "oldName" |>.toOption |>.getD "old"
   let newName := params.getObjValAs? String "newName" |>.toOption |>.getD "new"
 
   -- Send progress notifications
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "refactor-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "begin"),
@@ -360,7 +360,7 @@ def handleRefactor (params : Lean.Json) : ServerM MyState Lean.Json := do
   ])
 
   -- Simulate some work
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "refactor-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "report"),
@@ -370,8 +370,8 @@ def handleRefactor (params : Lean.Json) : ServerM MyState Lean.Json := do
   ])
 
   -- Build workspace edit
-  let some content ← getDocumentContent uri | do
-    sendNotification "$/progress" (Lean.Json.mkObj [
+  let some content ← ctx.getDocumentContent uri | do
+    ctx.sendNotification "$/progress" (Lean.Json.mkObj [
       ("token", Lean.Json.str "refactor-1"),
       ("value", Lean.Json.mkObj [("kind", Lean.Json.str "end"), ("message", Lean.Json.str "Failed: document not found")])
     ])
@@ -385,13 +385,13 @@ def handleRefactor (params : Lean.Json) : ServerM MyState Lean.Json := do
   let edit := edits.foldl (fun b e => b.replace uri e.range e.newText) edit
 
   -- Request the client to apply the edit
-  let promise ← sendRequest "workspace/applyEdit" (Lean.Json.mkObj [
+  let promise ← ctx.sendRequest "workspace/applyEdit" (Lean.Json.mkObj [
     ("label", Lean.Json.str s!"Rename {oldName} → {newName}"),
     ("edit", Lean.toJson edit.build)
   ])
 
   -- End progress
-  sendNotification "$/progress" (Lean.Json.mkObj [
+  ctx.sendNotification "$/progress" (Lean.Json.mkObj [
     ("token", Lean.Json.str "refactor-1"),
     ("value", Lean.Json.mkObj [
       ("kind", Lean.Json.str "end"),
@@ -411,7 +411,7 @@ def handleRefactor (params : Lean.Json) : ServerM MyState Lean.Json := do
 /-! ## Main Entry Point -/
 
 def main : IO Unit := do
-  let config := ServerConfig.new "lapis-example" ({} : MyState)
+  let config : LspConfig MyState := LspConfig.new "lapis-example"
     |>.withVersion "1.0.0"
     |>.withCapabilities {
       -- Text document sync
@@ -452,4 +452,4 @@ def main : IO Unit := do
     |>.onRequest "lapis/stats" handleStats
     |>.onRequest "lapis/refactor" handleRefactor
 
-  runStdio config
+  runStdio config ({} : MyState)
