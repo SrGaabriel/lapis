@@ -181,7 +181,7 @@ def handleRegisterCapability (ctx : RequestContext TestState) (_params : Lean.Js
   -- null response means success
   return Lean.Json.mkObj [("success", Lean.Json.bool true), ("result", result)]
 
-def handleTestEdit (ctx : RequestContext TestState) (params : HoverParams) : IO (Option Hover) := do
+def handleTestEdit (_ctx : RequestContext TestState) (params : HoverParams) : IO (Option Hover) := do
   let _edit := WorkspaceEditBuilder.new
     |>.replace params.textDocument.uri
         { start := { line := 0, character := 0 }, «end» := { line := 0, character := 5 } }

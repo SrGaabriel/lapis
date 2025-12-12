@@ -2,6 +2,7 @@ import Lapis.Protocol.JsonRpc
 import Lapis.Protocol.Types
 import Lapis.Transport.Base
 import Lapis.Server.Receiver
+import Lapis.Concurrent.Channel
 import Std.Data.HashMap
 
 namespace Lapis.Server.Progress
@@ -11,6 +12,7 @@ open Lapis.Protocol.JsonRpc
 open Lapis.Protocol.Types
 open Lapis.Transport
 open Lapis.Server.Receiver
+open Lapis.Concurrent (AtomicCounter)
 open Std (HashMap)
 
 /-- A progress token can be a string or number -/
@@ -83,7 +85,7 @@ structure ProgressManager where
   /-- Active progress operations -/
   activeProgress : IO.Ref (HashMap String ProgressState)
   /-- Counter for generating unique tokens -/
-  tokenCounter : IO.Ref Nat
+  tokenCounter : AtomicCounter
   /-- Output channel for sending notifications -/
   outputChannel : OutputChannel
   /-- Pending responses for create requests -/
@@ -94,13 +96,12 @@ namespace ProgressManager
 /-- Create a new progress manager -/
 def new (outputChannel : OutputChannel) (pendingResponses : PendingResponses) : IO ProgressManager := do
   let activeProgress ← IO.mkRef (HashMap.emptyWithCapacity 16)
-  let tokenCounter ← IO.mkRef 0
+  let tokenCounter ← AtomicCounter.new
   return { activeProgress, tokenCounter, outputChannel, pendingResponses }
 
 /-- Generate a unique progress token -/
 def generateToken (pm : ProgressManager) : IO ProgressToken := do
-  -- Atomically get and increment counter
-  let n ← pm.tokenCounter.modifyGet fun n => (n, n + 1)
+  let n ← pm.tokenCounter.incrementAndGet
   return .number (Int.ofNat n)
 
 /-- Send a progress notification -/

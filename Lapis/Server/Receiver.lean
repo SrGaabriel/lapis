@@ -1,11 +1,13 @@
 import Lapis.Transport.Base
 import Lapis.Protocol.JsonRpc
+import Lapis.Concurrent.Channel
 import Std.Data.HashMap
 
 namespace Lapis.Server.Receiver
 
 open Lean Json
 open Lapis.Transport
+open Lapis.Concurrent (AtomicCounter)
 open Std (HashMap)
 open Lapis.Protocol.JsonRpc
 
@@ -13,25 +15,23 @@ open Lapis.Protocol.JsonRpc
     Uses atomic IO.Ref operations - no mutex needed. -/
 structure PendingResponses where
   ref : IO.Ref (HashMap RequestId (IO.Promise Json))
-  nextId : IO.Ref Nat
+  nextId : AtomicCounter
 
 def PendingResponses.new : IO PendingResponses := do
   let ref ← IO.mkRef (HashMap.emptyWithCapacity 16)
-  let nextId ← IO.mkRef 0
+  let nextId ← AtomicCounter.new
   return { ref, nextId }
 
-def PendingResponses.register (pr : PendingResponses) (promise : IO.Promise Json) : IO RequestId := do
-  -- Atomically get and increment ID
-  let id ← pr.nextId.modifyGet fun n => (n, n + 1)
-  let reqId := RequestId.num id
-  -- Atomically insert into map
-  pr.ref.modify fun m => m.insert reqId promise
-  return reqId
-
-def PendingResponses.add (pr : PendingResponses) (id : RequestId) (token : IO.Promise Json) : IO Unit := do
+private def PendingResponses.add (pr : PendingResponses) (id : RequestId) (token : IO.Promise Json) : IO Unit := do
   pr.ref.modify fun m => m.insert id token
 
-def PendingResponses.remove (pr : PendingResponses) (id : RequestId) : IO Unit := do
+def PendingResponses.register (pr : PendingResponses) (promise : IO.Promise Json) : IO RequestId := do
+  let id ← pr.nextId.incrementAndGet
+  let reqId := RequestId.num id
+  pr.add reqId promise
+  return reqId
+
+private def PendingResponses.remove (pr : PendingResponses) (id : RequestId) : IO Unit := do
   pr.ref.modify fun m => m.erase id
 
 def PendingResponses.execute (pr : PendingResponses) (id : RequestId) (payload : Json) : IO Unit := do

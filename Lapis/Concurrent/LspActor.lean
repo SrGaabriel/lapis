@@ -15,6 +15,7 @@ import Lapis.Protocol.Messages
 import Lapis.Protocol.Capabilities
 import Lapis.Transport.Base
 import Lapis.Server.Receiver
+import Lapis.Server.Progress
 import Std.Data.HashMap
 
 namespace Lapis.Concurrent.LspActor
@@ -29,6 +30,7 @@ open Lapis.Protocol.Messages
 open Lapis.Protocol.Capabilities
 open Lapis.Transport
 open Lapis.Server.Receiver
+open Lapis.Server.Progress
 open Std (HashMap)
 
 /-! ## Request Context -/
@@ -47,6 +49,8 @@ structure RequestContext (UserState : Type) where
   capabilities : ServerCapabilities
   /-- Server info -/
   serverInfo : ServerInfo
+  /-- Progress manager for work done progress -/
+  progressManager : ProgressManager
   /-- Cancellation token for this request -/
   cancelToken : IO.CancelToken
 
@@ -132,6 +136,22 @@ def showWarning (ctx : RequestContext UserState) (message : String) : IO Unit :=
 def showError (ctx : RequestContext UserState) (message : String) : IO Unit :=
   ctx.showMessage 1 message
 
+/-- Run an action with progress reporting -/
+def withProgress (ctx : RequestContext UserState) (title : String)
+    (cancellable : Bool := false)
+    (action : ProgressHandle → IO α) : IO α := do
+  let token ← ctx.progressManager.generateToken
+  let _ ← ctx.progressManager.createToken token
+  ctx.progressManager.begin token title cancellable
+  try
+    let handle : ProgressHandle := { manager := ctx.progressManager, token }
+    let result ← action handle
+    ctx.progressManager.end token (message := some "Done")
+    return result
+  catch e =>
+    ctx.progressManager.end token (message := some s!"Failed: {e}")
+    throw e
+
 end RequestContext
 
 /-! ## Handler Types -/
@@ -194,9 +214,7 @@ structure LspState (UserState : Type) where
   initialized : Bool := false
   /-- Shutdown requested -/
   shutdownRequested : Bool := false
-  /-- Pending requests -/
-  pendingRequests : HashMap String PendingRequest := {}
-  /-- Count of active requests -/
+  /-- Count of active requests (for backpressure) -/
   activeRequests : Nat := 0
 
 /-! ## LSP Actor Reference -/
@@ -242,8 +260,10 @@ structure LspRuntime (UserState : Type) where
   outputChannel : OutputChannel
   pendingResponses : PendingResponses
   userStateRef : IO.Ref UserState
-
-/-! ## Built-in Handlers -/
+  /-- Progress manager for work done progress -/
+  progressManager : ProgressManager
+  /-- Shared ref for pending requests (for async cleanup) -/
+  pendingRequestsRef : IO.Ref (HashMap String PendingRequest)
 
 /-- Handle initialize request -/
 private def handleInitialize (rt : LspRuntime UserState) (_params : InitializeParams) : IO InitializeResult := do
@@ -267,6 +287,7 @@ private def processRequest (rt : LspRuntime UserState) (state : LspState UserSta
     userStateRef := rt.userStateRef
     capabilities := rt.config.capabilities
     serverInfo := { name := rt.config.name, version := rt.config.version }
+    progressManager := rt.progressManager
     cancelToken := cancelToken
   }
 
@@ -308,12 +329,12 @@ private def processRequest (rt : LspRuntime UserState) (state : LspState UserSta
 
     catch e =>
       rt.outputChannel.send (mkInternalError (some msg.id) s!"Handler error: {e}")
+    finally
+      rt.pendingRequestsRef.modify fun m => m.erase idStr
 
   let pending : PendingRequest := { id := msg.id, cancelToken, task }
-  return { state with
-    pendingRequests := state.pendingRequests.insert idStr pending
-    activeRequests := state.activeRequests + 1
-  }
+  rt.pendingRequestsRef.modify fun m => m.insert idStr pending
+  return { state with activeRequests := state.activeRequests + 1 }
 
 /-- Process a notification -/
 private def processNotification (rt : LspRuntime UserState) (state : LspState UserState)
@@ -327,6 +348,7 @@ private def processNotification (rt : LspRuntime UserState) (state : LspState Us
     userStateRef := rt.userStateRef
     capabilities := rt.config.capabilities
     serverInfo := { name := rt.config.name, version := rt.config.version }
+    progressManager := rt.progressManager
     cancelToken := cancelToken
   }
 
@@ -334,6 +356,12 @@ private def processNotification (rt : LspRuntime UserState) (state : LspState Us
   match msg.method with
   | "initialized" =>
     return { state with initialized := true }
+
+  | "window/workDoneProgress/cancel" =>
+    if let some params := msg.params then
+      if let .ok token := FromJson.fromJson? (α := ProgressToken) (params.getObjValD "token") then
+        rt.progressManager.markCancelled token
+    return state
 
   | _ =>
     -- Try user handler
@@ -372,10 +400,11 @@ private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState
 
   | .cancelRequest id =>
     let idStr := toString id
-    match state.pendingRequests.get? idStr with
-    | some pending =>
-      pending.cancelToken.set
-      return .continue { state with pendingRequests := state.pendingRequests.erase idStr }
+    let pending ← rt.pendingRequestsRef.get
+    match pending.get? idStr with
+    | some req =>
+      req.cancelToken.set
+      return .continue state
     | none =>
       return .continue state
 
@@ -388,8 +417,9 @@ private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState
     return .continue state
 
   | .shutdown =>
-    for (_, pending) in state.pendingRequests.toList do
-      pending.cancelToken.set
+    let pending ← rt.pendingRequestsRef.get
+    for (_, req) in pending.toList do
+      req.cancelToken.set
     return .stop
 
 /-! ## Spawn LSP Actor -/
@@ -400,12 +430,20 @@ def spawnLspActor (config : LspConfig UserState) (vfs : VfsRef)
     (userStateRef : IO.Ref UserState)
     : IO (Actor (LspMsg UserState) (LspState UserState) × LspRef UserState) := do
 
+  -- Create shared ref for pending requests (enables async cleanup)
+  let pendingRequestsRef ← IO.mkRef ({} : HashMap String PendingRequest)
+
+  -- Create progress manager for work done progress
+  let progressManager ← ProgressManager.new outputChannel pendingResponses
+
   let rt : LspRuntime UserState := {
     config := config
     vfs := vfs
     outputChannel := outputChannel
     pendingResponses := pendingResponses
     userStateRef := userStateRef
+    progressManager := progressManager
+    pendingRequestsRef := pendingRequestsRef
   }
 
   let initialState : LspState UserState := {}

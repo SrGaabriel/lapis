@@ -7,6 +7,8 @@
 
   Each piece points to a contiguous range in either buffer. Edits work by
   splitting pieces and inserting new ones, never modifying the underlying buffers.
+
+  Operations are O(log n) due to the finger tree structure.
 -/
 
 import Lapis.VFS.FingerTree
@@ -35,15 +37,6 @@ structure Piece where
   deriving Inhabited, Repr
 
 namespace Piece
-
-/-- Convert a piece to the FingerTree element type -/
-def toElem (p : Piece) : Elem :=
-  { measure := {
-      bytes := p.length
-      utf16Units := p.utf16Length
-      lines := p.lineBreaks
-    }
-  }
 
 /-- Count UTF-16 code units in a string -/
 private def computeUtf16Length (s : String) : Nat :=
@@ -78,6 +71,14 @@ def isEmpty (p : Piece) : Bool := p.length == 0
 
 end Piece
 
+/-- Pieces are measurable for the finger tree -/
+instance : Measurable Piece where
+  measure p := {
+    bytes := p.length
+    utf16Units := p.utf16Length
+    lines := p.lineBreaks
+  }
+
 /-! ## Text Buffers -/
 
 /-- The two text buffers backing the piece table -/
@@ -100,7 +101,7 @@ def getPieceText (buffers : TextBuffers) (p : Piece) : String :=
   -- Extract substring using byte positions
   let startPos := ⟨p.start⟩
   let endPos := ⟨p.start + p.length⟩
-  buf.extract startPos endPos
+  String.Pos.Raw.extract buf startPos endPos
 
 /-- Append text to the add buffer, returning new buffers and the start position -/
 def appendText (buffers : TextBuffers) (text : String) : TextBuffers × Nat :=
@@ -110,20 +111,12 @@ def appendText (buffers : TextBuffers) (text : String) : TextBuffers × Nat :=
 
 end TextBuffers
 
-/-! ## Piece Tree -/
-
-/-- A piece tree is a finger tree of pieces (represented as Elems) -/
-abbrev PieceTree := FingerTree
-
 /-! ## Piece Table State -/
 
-/-- The complete piece table state -/
+/-- The complete piece table state using a finger tree of pieces -/
 structure PieceTableState where
   buffers : TextBuffers
-  /-- We store pieces as a list for now, will be upgraded to use proper finger tree -/
-  pieces : Array Piece
-  /-- Cached total measure -/
-  totalMeasure : Measure
+  pieces : FingerTree Piece
   deriving Inhabited
 
 namespace PieceTableState
@@ -132,106 +125,73 @@ namespace PieceTableState
 def fromContent (content : String) : PieceTableState :=
   if content.isEmpty then
     { buffers := TextBuffers.fromContent content
-      pieces := #[]
-      totalMeasure := Measure.empty
+      pieces := .empty
     }
   else
     let buffers := TextBuffers.fromContent content
     let piece := Piece.fromText .original 0 content
     { buffers := buffers
-      pieces := #[piece]
-      totalMeasure := {
-        bytes := piece.length
-        utf16Units := piece.utf16Length
-        lines := piece.lineBreaks
-      }
+      pieces := .single piece
     }
 
 /-- Get the total byte length -/
-def byteLength (state : PieceTableState) : Nat := state.totalMeasure.bytes
+def byteLength (state : PieceTableState) : Nat := state.pieces.measure.bytes
 
 /-- Get the total line count -/
-def lineCount (state : PieceTableState) : Nat := state.totalMeasure.lines
+def lineCount (state : PieceTableState) : Nat := state.pieces.measure.lines
 
 /-- Get the total UTF-16 length -/
-def utf16Length (state : PieceTableState) : Nat := state.totalMeasure.utf16Units
-
-/-- Recompute total measure from pieces -/
-private def recomputeMeasure (pieces : Array Piece) : Measure :=
-  pieces.foldl (fun m p => m + {
-    bytes := p.length
-    utf16Units := p.utf16Length
-    lines := p.lineBreaks
-  }) Measure.empty
+def utf16Length (state : PieceTableState) : Nat := state.pieces.measure.utf16Units
 
 /-- Get all text content -/
 def getContent (state : PieceTableState) : String :=
   state.pieces.foldl (fun acc p => acc ++ state.buffers.getPieceText p) ""
 
-/-- Helper to get text in byte range, accumulating over pieces -/
-private def getTextByteRangeAux (state : PieceTableState) (startByte endByte : Nat)
-    (idx : Nat) (currentByte : Nat) (result : String) : String :=
-  if h : idx < state.pieces.size then
-    let p := state.pieces[idx]
-    let pieceEnd := currentByte + p.length
-    if currentByte >= endByte then
-      result
-    else if pieceEnd > startByte then
-      -- This piece overlaps with the range
-      let pieceStartInRange := if currentByte >= startByte then 0 else startByte - currentByte
-      let pieceEndInRange := if pieceEnd <= endByte then p.length else endByte - currentByte
-      let text := state.buffers.getPieceText p
-      let startPos : String.Pos := ⟨pieceStartInRange⟩
-      let endPos : String.Pos := ⟨pieceEndInRange⟩
-      let newResult := result ++ text.extract startPos endPos
-      getTextByteRangeAux state startByte endByte (idx + 1) pieceEnd newResult
-    else
-      getTextByteRangeAux state startByte endByte (idx + 1) pieceEnd result
-  else
-    result
-termination_by state.pieces.size - idx
-
 /-- Get text in a byte range -/
 def getTextByteRange (state : PieceTableState) (startByte endByte : Nat) : String :=
-  getTextByteRangeAux state startByte endByte 0 0 ""
-
-/-- Find piece index and offset for a byte position -/
-private def findPieceAtByteAux (state : PieceTableState) (bytePos : Nat)
-    (idx : Nat) (currentByte : Nat) : Option (Nat × Nat) :=
-  if h : idx < state.pieces.size then
-    let p := state.pieces[idx]
-    let pieceEnd := currentByte + p.length
-    if bytePos < pieceEnd then
-      some (idx, bytePos - currentByte)
-    else
-      findPieceAtByteAux state bytePos (idx + 1) pieceEnd
+  if startByte >= endByte then ""
   else
-    -- Position is at the end
-    if bytePos == currentByte then
-      some (state.pieces.size, 0)
+    let pieces := state.pieces.toArray
+    getTextByteRangeAux pieces state.buffers startByte endByte 0 0 ""
+where
+  getTextByteRangeAux (pieces : Array Piece) (buffers : TextBuffers)
+      (startByte endByte : Nat) (idx : Nat) (currentByte : Nat) (result : String) : String :=
+    if h : idx < pieces.size then
+      let p := pieces[idx]
+      let pieceEnd := currentByte + p.length
+      if currentByte >= endByte then
+        result
+      else if pieceEnd > startByte then
+        -- This piece overlaps with the range
+        let pieceStartInRange := if currentByte >= startByte then 0 else startByte - currentByte
+        let pieceEndInRange := if pieceEnd <= endByte then p.length else endByte - currentByte
+        let text := buffers.getPieceText p
+        let startPos : String.Pos.Raw := ⟨pieceStartInRange⟩
+        let endPos : String.Pos.Raw := ⟨pieceEndInRange⟩
+        let newResult := result ++ String.Pos.Raw.extract text startPos endPos
+        getTextByteRangeAux pieces buffers startByte endByte (idx + 1) pieceEnd newResult
+      else
+        getTextByteRangeAux pieces buffers startByte endByte (idx + 1) pieceEnd result
     else
-      none
-termination_by state.pieces.size - idx
-
-private def findPieceAtByte (state : PieceTableState) (bytePos : Nat) : Option (Nat × Nat) :=
-  findPieceAtByteAux state bytePos 0 0
+      result
+  termination_by pieces.size - idx
 
 /-- Split a piece at a byte offset within it -/
-private def splitPieceAt (state : PieceTableState) (p : Piece) (offset : Nat) : Piece × Piece :=
+private def splitPieceAt (buffers : TextBuffers) (p : Piece) (offset : Nat) : Piece × Piece :=
   if offset == 0 then
     (Piece.empty, p)
   else if offset >= p.length then
     (p, Piece.empty)
   else
     -- Need to scan the text to count line breaks and UTF-16 units in each half
-    let text := state.buffers.getPieceText p
-    let leftText := text.extract ⟨0⟩ ⟨offset⟩
-    let rightText := text.extract ⟨offset⟩ ⟨text.utf8ByteSize⟩
+    let text := buffers.getPieceText p
+    let leftText := String.Pos.Raw.extract text ⟨0⟩ ⟨offset⟩
+    let rightText := String.Pos.Raw.extract text ⟨offset⟩ ⟨text.utf8ByteSize⟩
     let leftPiece := Piece.fromText p.buffer p.start leftText
     let rightPiece := Piece.fromText p.buffer (p.start + offset) rightText
     (leftPiece, rightPiece)
 
-/-- Insert text at a byte position -/
+/-- Insert text at a byte position - O(log n) -/
 def insertAt (state : PieceTableState) (bytePos : Nat) (text : String) : PieceTableState :=
   if text.isEmpty then
     state
@@ -240,91 +200,105 @@ def insertAt (state : PieceTableState) (bytePos : Nat) (text : String) : PieceTa
     let (newBuffers, addStart) := state.buffers.appendText text
     let newPiece := Piece.fromText .add addStart text
 
-    match findPieceAtByte state bytePos with
-    | none => state  -- Invalid position
-    | some (pieceIdx, offsetInPiece) =>
-      if pieceIdx >= state.pieces.size then
-        -- Insert at end
-        let newPieces := state.pieces.push newPiece
-        { buffers := newBuffers
-          pieces := newPieces
-          totalMeasure := recomputeMeasure newPieces
-        }
-      else if offsetInPiece == 0 then
-        -- Insert at piece boundary
-        let newPieces := state.pieces.insertIdx! pieceIdx newPiece
-        { buffers := newBuffers
-          pieces := newPieces
-          totalMeasure := recomputeMeasure newPieces
-        }
-      else
-        -- Split the piece
-        let p := state.pieces[pieceIdx]!
-        let (leftPiece, rightPiece) := splitPieceAt state p offsetInPiece
-        let piecesAfterErase := state.pieces.eraseIdx! pieceIdx
-        -- Build new pieces array
-        let newPieces := buildInsertPieces piecesAfterErase pieceIdx leftPiece newPiece rightPiece
-        { buffers := newBuffers
-          pieces := newPieces
-          totalMeasure := recomputeMeasure newPieces
-        }
-where
-  buildInsertPieces (arr : Array Piece) (idx : Nat) (left mid right : Piece) : Array Piece :=
-    let arr1 := if left.isEmpty then arr else arr.insertIdx! idx left
-    let idx1 := if left.isEmpty then idx else idx + 1
-    let arr2 := arr1.insertIdx! idx1 mid
-    let idx2 := idx1 + 1
-    if right.isEmpty then arr2 else arr2.insertIdx! idx2 right
+    if state.pieces.isEmpty then
+      { buffers := newBuffers, pieces := .single newPiece }
+    else if bytePos == 0 then
+      -- Insert at beginning
+      { buffers := newBuffers, pieces := FingerTree.cons newPiece state.pieces }
+    else if bytePos >= state.byteLength then
+      -- Insert at end
+      { buffers := newBuffers, pieces := FingerTree.snoc state.pieces newPiece }
+    else
+      -- Split at position and insert
+      match state.pieces.splitAtBytes bytePos with
+      | none =>
+        -- Couldn't split, append at end
+        { buffers := newBuffers, pieces := FingerTree.snoc state.pieces newPiece }
+      | some ⟨left, pivot, right⟩ =>
+        -- Check if we need to split the pivot piece
+        let leftMeasure := left.measure.bytes
+        let offsetInPivot := bytePos - leftMeasure
+        if offsetInPivot == 0 then
+          -- Insert between left and pivot
+          let newPieces := left ++ FingerTree.cons newPiece (FingerTree.cons pivot right)
+          { buffers := newBuffers, pieces := newPieces }
+        else
+          -- Split the pivot piece
+          let (leftPart, rightPart) := splitPieceAt newBuffers pivot offsetInPivot
+          let newPieces :=
+            if leftPart.isEmpty then
+              left ++ FingerTree.cons newPiece (if rightPart.isEmpty then right else FingerTree.cons rightPart right)
+            else if rightPart.isEmpty then
+              FingerTree.snoc left leftPart ++ FingerTree.cons newPiece right
+            else
+              FingerTree.snoc left leftPart ++ FingerTree.cons newPiece (FingerTree.cons rightPart right)
+          { buffers := newBuffers, pieces := newPieces }
 
-/-- Delete text in a byte range -/
+/-- Delete text in a byte range - O(log n) -/
 def deleteRange (state : PieceTableState) (startByte endByte : Nat) : PieceTableState :=
-  if startByte >= endByte then
+  if startByte >= endByte || state.pieces.isEmpty then
     state
+  else if startByte == 0 && endByte >= state.byteLength then
+    -- Delete everything
+    { state with pieces := .empty }
+  else if startByte == 0 then
+    -- Delete from beginning
+    match state.pieces.splitAtBytes endByte with
+    | none => state
+    | some ⟨_, pivot, right⟩ =>
+      let endMeasure := state.pieces.measure.bytes - right.measure.bytes - pivot.length
+      let offsetInPivot := endByte - endMeasure
+      if offsetInPivot >= pivot.length then
+        { state with pieces := right }
+      else
+        let (_, rightPart) := splitPieceAt state.buffers pivot offsetInPivot
+        if rightPart.isEmpty then
+          { state with pieces := right }
+        else
+          { state with pieces := FingerTree.cons rightPart right }
+  else if endByte >= state.byteLength then
+    -- Delete to end
+    match state.pieces.splitAtBytes startByte with
+    | none => state
+    | some ⟨left, pivot, _⟩ =>
+      let leftMeasure := left.measure.bytes
+      let offsetInPivot := startByte - leftMeasure
+      if offsetInPivot == 0 then
+        { state with pieces := left }
+      else
+        let (leftPart, _) := splitPieceAt state.buffers pivot offsetInPivot
+        if leftPart.isEmpty then
+          { state with pieces := left }
+        else
+          { state with pieces := FingerTree.snoc left leftPart }
   else
-    match findPieceAtByte state startByte, findPieceAtByte state endByte with
-    | some (startIdx, startOffset), some (endIdx, endOffset) =>
-      if startIdx >= state.pieces.size then
-        state  -- Nothing to delete
-      else
-        let newPieces := buildDeletePieces state startIdx startOffset endIdx endOffset
-        { state with
-          pieces := newPieces
-          totalMeasure := recomputeMeasure newPieces
-        }
-    | _, _ => state
-where
-  buildDeletePieces (state : PieceTableState) (startIdx startOffset endIdx endOffset : Nat) : Array Piece :=
-    -- Keep pieces before start
-    let beforeStart := state.pieces.extract 0 startIdx
+    -- Delete in middle - split at start, then at end
+    match state.pieces.splitAtBytes startByte with
+    | none => state
+    | some ⟨left, pivotStart, afterStart⟩ =>
+      let leftMeasure := left.measure.bytes
+      let offsetInPivotStart := startByte - leftMeasure
 
-    -- Handle start piece (keep left part)
-    let leftPart :=
-      if startOffset > 0 && startIdx < state.pieces.size then
-        let p := state.pieces[startIdx]!
-        let (leftPiece, _) := splitPieceAt state p startOffset
-        if leftPiece.isEmpty then #[] else #[leftPiece]
-      else
-        #[]
+      -- Get left part of start pivot
+      let (leftOfStart, rightOfStart) := splitPieceAt state.buffers pivotStart offsetInPivotStart
+      let leftTree := if leftOfStart.isEmpty then left else FingerTree.snoc left leftOfStart
 
-    -- Handle end piece (keep right part)
-    let (rightPart, afterEnd) :=
-      let actualEndIdx := min endIdx (state.pieces.size - 1)
-      if endOffset > 0 && actualEndIdx < state.pieces.size then
-        let p := state.pieces[actualEndIdx]!
-        let (_, rightPiece) := splitPieceAt state p endOffset
-        let right := if rightPiece.isEmpty then #[] else #[rightPiece]
-        let after := state.pieces.extract (actualEndIdx + 1) state.pieces.size
-        (right, after)
-      else if endIdx < state.pieces.size && endOffset == 0 then
-        -- End is at the start of a piece, keep that piece and all after
-        let after := state.pieces.extract endIdx state.pieces.size
-        (#[], after)
-      else
-        (#[], #[])
+      -- Now find the end in the remaining pieces
+      let remainingStart := if rightOfStart.isEmpty then afterStart else FingerTree.cons rightOfStart afterStart
+      let bytesToEnd := endByte - startByte
 
-    beforeStart ++ leftPart ++ rightPart ++ afterEnd
+      match remainingStart.splitAtBytes bytesToEnd with
+      | none =>
+        -- End is past remaining, just keep left
+        { state with pieces := leftTree }
+      | some ⟨_, pivotEnd, right⟩ =>
+        let deletedMeasure := remainingStart.measure.bytes - right.measure.bytes - pivotEnd.length
+        let offsetInPivotEnd := bytesToEnd - deletedMeasure
+        let (_, rightOfEnd) := splitPieceAt state.buffers pivotEnd offsetInPivotEnd
+        let rightTree := if rightOfEnd.isEmpty then right else FingerTree.cons rightOfEnd right
+        { state with pieces := leftTree ++ rightTree }
 
-/-- Replace text in a byte range -/
+/-- Replace text in a byte range - O(log n) -/
 def replaceRange (state : PieceTableState) (startByte endByte : Nat) (text : String) : PieceTableState :=
   let afterDelete := state.deleteRange startByte endByte
   afterDelete.insertAt startByte text
@@ -335,41 +309,31 @@ end PieceTableState
 
 namespace PieceTableState
 
-/-- Check if two pieces can be coalesced (adjacent in the add buffer) -/
-def canCoalesce (p1 p2 : Piece) (addBufferLen : Nat) : Bool :=
-  p1.buffer == .add &&
-  p2.buffer == .add &&
-  p1.start + p1.length == p2.start &&
-  p2.start + p2.length == addBufferLen
-
 /-- Coalesce two adjacent pieces -/
-def coalescePieces (p1 p2 : Piece) : Piece :=
+private def coalescePieces (p1 p2 : Piece) : Piece :=
   { p1 with
     length := p1.length + p2.length
     lineBreaks := p1.lineBreaks + p2.lineBreaks
     utf16Length := p1.utf16Length + p2.utf16Length
   }
 
-/-- Compact helper that processes pieces recursively -/
-private def compactAux (pieces : Array Piece) (idx : Nat) (current : Piece) (result : Array Piece) : Array Piece :=
-  if h : idx < pieces.size then
-    let next := pieces[idx]
-    -- Check if we can merge: same buffer and adjacent
-    if current.buffer == next.buffer && current.start + current.length == next.start then
-      compactAux pieces (idx + 1) (coalescePieces current next) result
-    else
-      compactAux pieces (idx + 1) next (result.push current)
-  else
-    result.push current
-termination_by pieces.size - idx
-
-/-- Compact the piece array by merging adjacent same-buffer pieces -/
+/-- Compact the piece table by merging adjacent same-buffer pieces -/
 def compact (state : PieceTableState) : PieceTableState :=
-  if state.pieces.size <= 1 then
-    state
-  else
-    let newPieces := compactAux state.pieces 1 state.pieces[0]! #[]
-    { state with pieces := newPieces }
+  let pieceList := state.pieces.toList
+  match pieceList with
+  | [] => state
+  | p :: ps =>
+    let compacted := compactAux ps p []
+    { state with pieces := FingerTree.fromList compacted }
+where
+  compactAux (pieces : List Piece) (current : Piece) (result : List Piece) : List Piece :=
+    match pieces with
+    | [] => result ++ [current]
+    | next :: rest =>
+      if current.buffer == next.buffer && current.start + current.length == next.start then
+        compactAux rest (coalescePieces current next) result
+      else
+        compactAux rest next (result ++ [current])
 
 end PieceTableState
 

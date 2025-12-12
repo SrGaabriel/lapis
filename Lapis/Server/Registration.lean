@@ -2,6 +2,7 @@ import Lapis.Protocol.JsonRpc
 import Lapis.Protocol.Types
 import Lapis.Transport.Base
 import Lapis.Server.Receiver
+import Lapis.Concurrent.Channel
 import Std.Data.HashMap
 
 namespace Lapis.Server.Registration
@@ -11,6 +12,7 @@ open Lapis.Protocol.JsonRpc
 open Lapis.Protocol.Types
 open Lapis.Transport
 open Lapis.Server.Receiver
+open Lapis.Concurrent (AtomicCounter)
 open Std (HashMap)
 
 /-- A unique registration ID -/
@@ -127,7 +129,7 @@ structure RegistrationManager where
   /-- Current registration state -/
   state : IO.Ref RegistrationState
   /-- Counter for generating unique IDs -/
-  idCounter : IO.Ref Nat
+  idCounter : AtomicCounter
   /-- Output channel for sending requests -/
   outputChannel : OutputChannel
   /-- Pending responses -/
@@ -138,13 +140,12 @@ namespace RegistrationManager
 /-- Create a new registration manager -/
 def new (outputChannel : OutputChannel) (pendingResponses : PendingResponses) : IO RegistrationManager := do
   let state ← IO.mkRef { registrations := {}, byId := {} : RegistrationState }
-  let idCounter ← IO.mkRef 0
+  let idCounter ← AtomicCounter.new
   return { state, idCounter, outputChannel, pendingResponses }
 
 /-- Generate a unique registration ID -/
 def generateId (rm : RegistrationManager) (pfx : String := "reg") : IO RegistrationId := do
-  -- Atomically get and increment counter
-  let n ← rm.idCounter.modifyGet fun n => (n, n + 1)
+  let n ← rm.idCounter.incrementAndGet
   return s!"{pfx}-{n}"
 
 /-- Send a registration request to the client -/

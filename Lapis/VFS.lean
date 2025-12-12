@@ -213,17 +213,6 @@ def pruneSnapshots (store : DocumentStore) (uri : String) : IO Unit := do
       let newDoc := doc.pruneSnapshots
       docs.insert uri newDoc
 
-/-! ### Maintenance -/
-
-/-- Compact document piece table -/
-def compactDocument (store : DocumentStore) (uri : String) : IO Unit := do
-  store.documents.modify fun docs =>
-    match docs.get? uri with
-    | none => docs
-    | some doc =>
-      let newDoc := doc.compact
-      docs.insert uri newDoc
-
 /-- Rebuild document line index -/
 def rebuildLineIndex (store : DocumentStore) (uri : String) : IO Unit := do
   store.documents.modify fun docs =>

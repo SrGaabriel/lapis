@@ -51,7 +51,7 @@ def getText (snap : DocumentSnapshot) (startLine startChar endLine endChar : Nat
     let line ← if h : startLine < lines.length then some lines[startLine] else none
     let startPos := min startChar line.length
     let endPos := min endChar line.length
-    return line.extract ⟨startPos⟩ ⟨endPos⟩
+    return String.Pos.Raw.extract line ⟨startPos⟩ ⟨endPos⟩
   else
     -- Multi-line range
     let mut result := ""
@@ -59,9 +59,9 @@ def getText (snap : DocumentSnapshot) (startLine startChar endLine endChar : Nat
       if h : i < lines.length then
         let line := lines[i]
         if i == startLine then
-          result := result ++ line.extract ⟨min startChar line.length⟩ ⟨line.length⟩ ++ "\n"
+          result := result ++ String.Pos.Raw.extract line ⟨min startChar line.length⟩ ⟨line.length⟩ ++ "\n"
         else if i == endLine then
-          result := result ++ line.extract ⟨0⟩ ⟨min endChar line.length⟩
+          result := result ++ String.Pos.Raw.extract line ⟨0⟩ ⟨min endChar line.length⟩
         else
           result := result ++ line ++ "\n"
     return result

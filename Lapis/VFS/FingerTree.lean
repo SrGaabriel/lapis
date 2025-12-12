@@ -6,14 +6,12 @@
 
   Based on Hinze & Paterson's "Finger Trees: A Simple General-purpose Data Structure"
 
-  This implementation uses a concrete element type (Piece) and measure type
-  for the piece table use case, avoiding the complexity of universe-polymorphic
-  and nested finger trees in Lean 4.
+  This implementation uses a concrete measure type and is polymorphic over the
+  element type. The spine is non-recursive to avoid nested inductive issues -
+  this limits tree depth but is sufficient for practical use cases.
 -/
 
 namespace Lapis.VFS.FingerTree
-
-/-! ## Measure Type for Piece Table -/
 
 /-- Measure for piece table: tracks byte count, UTF-16 units, and line count -/
 structure Measure where
@@ -31,503 +29,279 @@ instance : Add Measure where
 
 def Measure.empty : Measure := ⟨0, 0, 0⟩
 
-/-! ## Elem: The element type stored in the tree
-
-For the piece table, this will be a Piece descriptor.
-We define a placeholder here that will be refined in PieceTable.lean
--/
-
-/-- Placeholder element type - will be replaced by Piece in actual usage -/
-structure Elem where
-  measure : Measure
-  deriving Repr, Inhabited
-
-/-! ## Digit Type -/
+/-- Typeclass for elements that can be measured -/
+class Measurable (α : Type) where
+  measure : α → Measure
 
 /-- A digit holds 1-4 elements at the ends of a finger tree -/
-inductive Digit
-  | one : Elem → Digit
-  | two : Elem → Elem → Digit
-  | three : Elem → Elem → Elem → Digit
-  | four : Elem → Elem → Elem → Elem → Digit
+private inductive Digit (α : Type)
+  | one : α → Digit α
+  | two : α → α → Digit α
+  | three : α → α → α → Digit α
+  | four : α → α → α → α → Digit α
   deriving Repr, Inhabited
 
 namespace Digit
 
-/-- Convert a digit to a list -/
-def toList : Digit → List Elem
+def toList : Digit α → List α
   | one a => [a]
   | two a b => [a, b]
   | three a b c => [a, b, c]
   | four a b c d => [a, b, c, d]
 
-/-- Get the head element of a digit -/
-def head : Digit → Elem
+def toArray : Digit α → Array α
+  | one a => #[a]
+  | two a b => #[a, b]
+  | three a b c => #[a, b, c]
+  | four a b c d => #[a, b, c, d]
+
+def head : Digit α → α
   | one a => a
   | two a _ => a
   | three a _ _ => a
   | four a _ _ _ => a
 
-/-- Get the last element of a digit -/
-def last : Digit → Elem
+def last : Digit α → α
   | one a => a
   | two _ b => b
   | three _ _ c => c
   | four _ _ _ d => d
 
-/-- Remove the head element, returning the tail if non-empty -/
-def tail? : Digit → Option Digit
+def tail? : Digit α → Option (Digit α)
   | one _ => none
   | two _ b => some (one b)
   | three _ b c => some (two b c)
   | four _ b c d => some (three b c d)
 
-/-- Remove the last element, returning the init if non-empty -/
-def init? : Digit → Option Digit
+def init? : Digit α → Option (Digit α)
   | one _ => none
   | two a _ => some (one a)
   | three a b _ => some (two a b)
   | four a b c _ => some (three a b c)
 
-/-- Create a digit from a non-empty list (1-4 elements) -/
-def fromList? : List Elem → Option Digit
+def fromList? : List α → Option (Digit α)
   | [a] => some (one a)
   | [a, b] => some (two a b)
   | [a, b, c] => some (three a b c)
   | [a, b, c, d] => some (four a b c d)
   | _ => none
 
-/-- Measure a digit by combining measures of its elements -/
-def measure : Digit → Measure
-  | one a => a.measure
-  | two a b => a.measure + b.measure
-  | three a b c => a.measure + b.measure + c.measure
-  | four a b c d => a.measure + b.measure + c.measure + d.measure
+def measure [Measurable α] : Digit α → Measure
+  | one a => Measurable.measure a
+  | two a b => Measurable.measure a + Measurable.measure b
+  | three a b c => Measurable.measure a + Measurable.measure b + Measurable.measure c
+  | four a b c d => Measurable.measure a + Measurable.measure b + Measurable.measure c + Measurable.measure d
 
 end Digit
 
-/-! ## Node Type -/
-
 /-- A node is a 2-3 node with cached measure -/
-inductive Node
-  | node2 : Measure → Elem → Elem → Node
-  | node3 : Measure → Elem → Elem → Elem → Node
+private inductive Node (α : Type)
+  | node2 : Measure → α → α → Node α
+  | node3 : Measure → α → α → α → Node α
   deriving Repr, Inhabited
 
 namespace Node
 
-/-- Get the cached measure of a node -/
-def measure : Node → Measure
+def measure : Node α → Measure
   | node2 v _ _ => v
   | node3 v _ _ _ => v
 
-/-- Convert a node to a digit -/
-def toDigit : Node → Digit
+def toDigit : Node α → Digit α
   | node2 _ a b => Digit.two a b
   | node3 _ a b c => Digit.three a b c
 
-/-- Convert a node to a list -/
-def toList : Node → List Elem
+def toList : Node α → List α
   | node2 _ a b => [a, b]
   | node3 _ a b c => [a, b, c]
 
-/-- Create a 2-node with computed measure -/
-def mk2 (a b : Elem) : Node :=
-  .node2 (a.measure + b.measure) a b
+def mk2 [Measurable α] (a b : α) : Node α :=
+  .node2 (Measurable.measure a + Measurable.measure b) a b
 
-/-- Create a 3-node with computed measure -/
-def mk3 (a b c : Elem) : Node :=
-  .node3 (a.measure + b.measure + c.measure) a b c
-
-/-- Convert a node to an element (for spine trees) -/
-def toElem (n : Node) : Elem :=
-  { measure := n.measure }
+def mk3 [Measurable α] (a b c : α) : Node α :=
+  .node3 (Measurable.measure a + Measurable.measure b + Measurable.measure c) a b c
 
 end Node
 
-/-! ## Spine Type
+/-- Nodes are themselves measurable via their cached measure -/
+instance : Measurable (Node α) where
+  measure := Node.measure
 
-The spine is a separate type that holds nodes.
-We use mutual inductive types to handle the nesting.
--/
-
-/-- Node digit for spine -/
-inductive NodeDigit
-  | one : Node → NodeDigit
-  | two : Node → Node → NodeDigit
-  | three : Node → Node → Node → NodeDigit
-  | four : Node → Node → Node → Node → NodeDigit
-  deriving Repr, Inhabited
-
-namespace NodeDigit
-
-def toList : NodeDigit → List Node
-  | one a => [a]
-  | two a b => [a, b]
-  | three a b c => [a, b, c]
-  | four a b c d => [a, b, c, d]
-
-def head : NodeDigit → Node
-  | one a => a
-  | two a _ => a
-  | three a _ _ => a
-  | four a _ _ _ => a
-
-def last : NodeDigit → Node
-  | one a => a
-  | two _ b => b
-  | three _ _ c => c
-  | four _ _ _ d => d
-
-def tail? : NodeDigit → Option NodeDigit
-  | one _ => none
-  | two _ b => some (one b)
-  | three _ b c => some (two b c)
-  | four _ b c d => some (three b c d)
-
-def init? : NodeDigit → Option NodeDigit
-  | one _ => none
-  | two a _ => some (one a)
-  | three a b _ => some (two a b)
-  | four a b c _ => some (three a b c)
-
-def fromList? : List Node → Option NodeDigit
-  | [a] => some (one a)
-  | [a, b] => some (two a b)
-  | [a, b, c] => some (three a b c)
-  | [a, b, c, d] => some (four a b c d)
-  | _ => none
-
-def measure : NodeDigit → Measure
-  | one a => a.measure
-  | two a b => a.measure + b.measure
-  | three a b c => a.measure + b.measure + c.measure
-  | four a b c d => a.measure + b.measure + c.measure + d.measure
-
-end NodeDigit
-
-/-! ## Spine
-
-A spine is a finger tree of nodes. We define it as a separate inductive
-to avoid nested inductive issues.
--/
-
-/-- Spine: a finger tree of nodes -/
-inductive Spine
-  | empty : Spine
-  | single : Node → Spine
-  | deep : Measure → NodeDigit → (Unit → Spine) → NodeDigit → Spine
+/-- Spine stores nodes in an array -/
+private structure Spine (α : Type) where
+  nodes : Array (Node α)
+  cachedMeasure : Measure
   deriving Inhabited
 
 namespace Spine
 
-def measure : Spine → Measure
-  | empty => Measure.empty
-  | single n => n.measure
-  | deep m _ _ _ => m
+def empty : Spine α := ⟨#[], Measure.empty⟩
 
-def isEmpty : Spine → Bool
-  | empty => true
-  | _ => false
+def isEmpty (sp : Spine α) : Bool := sp.nodes.isEmpty
+
+def measure (sp : Spine α) : Measure := sp.cachedMeasure
+
+def single (n : Node α) : Spine α := ⟨#[n], n.measure⟩
+
+def cons (n : Node α) (sp : Spine α) : Spine α :=
+  ⟨#[n] ++ sp.nodes, n.measure + sp.cachedMeasure⟩
+
+def snoc (sp : Spine α) (n : Node α) : Spine α :=
+  ⟨sp.nodes.push n, sp.cachedMeasure + n.measure⟩
+
+def viewL (sp : Spine α) : Option (Node α × Spine α) :=
+  if h : sp.nodes.size > 0 then
+    let hd := sp.nodes[0]'h
+    let tl := sp.nodes.extract 1 sp.nodes.size
+    let newMeasure := tl.foldl (fun m n => m + n.measure) Measure.empty
+    some (hd, ⟨tl, newMeasure⟩)
+  else
+    none
+
+def viewR (sp : Spine α) : Option (Spine α × Node α) :=
+  if h : sp.nodes.size > 0 then
+    let lst := sp.nodes[sp.nodes.size - 1]'(by omega)
+    let init := sp.nodes.pop
+    let newMeasure := init.foldl (fun m n => m + n.measure) Measure.empty
+    some (⟨init, newMeasure⟩, lst)
+  else
+    none
+
+def append (sp1 sp2 : Spine α) : Spine α :=
+  ⟨sp1.nodes ++ sp2.nodes, sp1.cachedMeasure + sp2.cachedMeasure⟩
+
+def fromArray (arr : Array (Node α)) : Spine α :=
+  let m := arr.foldl (fun m n => m + n.measure) Measure.empty
+  ⟨arr, m⟩
+
+def toArray (sp : Spine α) : Array (Node α) := sp.nodes
 
 end Spine
 
-/-! ## Finger Tree Type -/
-
-/--
-A finger tree is either empty, a single element, or a deep tree.
--/
-inductive FingerTree
-  | empty : FingerTree
-  | single : Elem → FingerTree
-  | deep : Measure → Digit → (Unit → Spine) → Digit → FingerTree
+/-- A finger tree is either empty, a single element, or a deep tree -/
+inductive FingerTree (α : Type)
+  | empty : FingerTree α
+  | single : α → FingerTree α
+  | deep : Measure → Digit α → Spine α → Digit α → FingerTree α
   deriving Inhabited
 
 namespace FingerTree
 
-/-- Get the measure of a tree -/
-def measure : FingerTree → Measure
+def measure [Measurable α] : FingerTree α → Measure
   | empty => Measure.empty
-  | single a => a.measure
+  | single a => Measurable.measure a
   | deep m _ _ _ => m
 
-/-- Check if tree is empty -/
-def isEmpty : FingerTree → Bool
+def isEmpty : FingerTree α → Bool
   | empty => true
   | _ => false
 
-/-- Create a deep tree with computed measure -/
-def mkDeep (pr : Digit) (sp : Unit → Spine) (sf : Digit) : FingerTree :=
-  let spMeas := (sp ()).measure
-  deep (pr.measure + spMeas + sf.measure) pr sp sf
+def mkDeep [Measurable α] (pr : Digit α) (sp : Spine α) (sf : Digit α) : FingerTree α :=
+  deep (pr.measure + sp.measure + sf.measure) pr sp sf
 
-/-- Create a singleton tree -/
-def singleton (a : Elem) : FingerTree := single a
+def singleton (a : α) : FingerTree α := single a
 
-/-! ### Spine operations (forward declarations needed) -/
-
-/-- Create node from two elements -/
-private def mkNode2 (a b : Elem) : Node := Node.mk2 a b
-
-/-- Create node from three elements -/
-private def mkNode3 (a b c : Elem) : Node := Node.mk3 a b c
-
-/-- Deep spine with computed measure -/
-def mkSpineDeep (pr : NodeDigit) (sp : Unit → Spine) (sf : NodeDigit) : Spine :=
-  let spMeas := (sp ()).measure
-  Spine.deep (pr.measure + spMeas + sf.measure) pr sp sf
-
-/-- Convert NodeDigit to Spine -/
-def nodeDigitToSpine : NodeDigit → Spine
-  | .one a => Spine.single a
-  | .two a b => mkSpineDeep (.one a) (fun _ => Spine.empty) (.one b)
-  | .three a b c => mkSpineDeep (.two a b) (fun _ => Spine.empty) (.one c)
-  | .four a b c d => mkSpineDeep (.two a b) (fun _ => Spine.empty) (.two c d)
-
-/-- Create node2 from two nodes -/
-private def mkNodeNode2 (a b : Node) : Node :=
-  Node.node2 (a.measure + b.measure) a.toElem b.toElem
-
-/-- Create node3 from three nodes -/
-private def mkNodeNode3 (a b c : Node) : Node :=
-  Node.node3 (a.measure + b.measure + c.measure) a.toElem b.toElem c.toElem
-
-/-! ### Spine cons/snoc -/
-
-partial def spineCons (n : Node) (sp : Spine) : Spine :=
-  match sp with
-  | .empty => .single n
-  | .single m => mkSpineDeep (.one n) (fun _ => .empty) (.one m)
-  | .deep m pr spThunk sf =>
-    match pr with
-    | .one b => .deep (n.measure + m) (.two n b) spThunk sf
-    | .two b c => .deep (n.measure + m) (.three n b c) spThunk sf
-    | .three b c e => .deep (n.measure + m) (.four n b c e) spThunk sf
-    | .four b c e f =>
-      let node := mkNodeNode3 c e f
-      let newSpine := fun _ => spineCons node (spThunk ())
-      mkSpineDeep (.two n b) newSpine sf
-
-partial def spineSnoc (sp : Spine) (n : Node) : Spine :=
-  match sp with
-  | .empty => .single n
-  | .single m => mkSpineDeep (.one m) (fun _ => .empty) (.one n)
-  | .deep m pr spThunk sf =>
-    match sf with
-    | .one b => .deep (m + n.measure) pr spThunk (.two b n)
-    | .two b c => .deep (m + n.measure) pr spThunk (.three b c n)
-    | .three b c e => .deep (m + n.measure) pr spThunk (.four b c e n)
-    | .four b c e f =>
-      let node := mkNodeNode3 b c e
-      let newSpine := fun _ => spineSnoc (spThunk ()) node
-      mkSpineDeep pr newSpine (.two f n)
-
-/-! ### Spine views -/
-
-inductive SpineViewL
-  | nil : SpineViewL
-  | cons : Node → Spine → SpineViewL
-  deriving Inhabited
-
-inductive SpineViewR
-  | nil : SpineViewR
-  | snoc : Spine → Node → SpineViewR
-  deriving Inhabited
-
-partial def spineViewL (sp : Spine) : SpineViewL :=
-  match sp with
-  | .empty => .nil
-  | .single n => .cons n .empty
-  | .deep _ pr spThunk sf =>
-    let rest := spineDeepL pr.tail? spThunk sf
-    .cons pr.head rest
-where
-  spineDeepL (pr : Option NodeDigit) (sp : Unit → Spine) (sf : NodeDigit) : Spine :=
-    match pr with
-    | some pr' => mkSpineDeep pr' sp sf
-    | none =>
-      match spineViewL (sp ()) with
-      | .nil => nodeDigitToSpine sf
-      | .cons node rest => mkSpineDeep (NodeDigit.one node) (fun _ => rest) sf
-
-partial def spineViewR (sp : Spine) : SpineViewR :=
-  match sp with
-  | .empty => .nil
-  | .single n => .snoc .empty n
-  | .deep _ pr spThunk sf =>
-    let rest := spineDeepR pr spThunk sf.init?
-    .snoc rest sf.last
-where
-  spineDeepR (pr : NodeDigit) (sp : Unit → Spine) (sf : Option NodeDigit) : Spine :=
-    match sf with
-    | some sf' => mkSpineDeep pr sp sf'
-    | none =>
-      match spineViewR (sp ()) with
-      | .nil => nodeDigitToSpine pr
-      | .snoc rest node => mkSpineDeep pr (fun _ => rest) (.one node)
-
-/-! ### Adding elements -/
-
-/-- Prepend an element to the tree -/
-partial def cons (a : Elem) (t : FingerTree) : FingerTree :=
+def cons [Measurable α] (a : α) (t : FingerTree α) : FingerTree α :=
   match t with
   | empty => single a
-  | single b => mkDeep (.one a) (fun _ => .empty) (.one b)
+  | single b => mkDeep (.one a) .empty (.one b)
   | deep m pr sp sf =>
     match pr with
-    | .one b => deep (a.measure + m) (.two a b) sp sf
-    | .two b c => deep (a.measure + m) (.three a b c) sp sf
-    | .three b c e => deep (a.measure + m) (.four a b c e) sp sf
+    | .one b => deep (Measurable.measure a + m) (.two a b) sp sf
+    | .two b c => deep (Measurable.measure a + m) (.three a b c) sp sf
+    | .three b c e => deep (Measurable.measure a + m) (.four a b c e) sp sf
     | .four b c e f =>
-      let node := mkNode3 c e f
-      let newSpine := fun _ => spineCons node (sp ())
+      let node := Node.mk3 c e f
+      let newSpine := sp.cons node
       mkDeep (.two a b) newSpine sf
 
-/-- Append an element to the tree -/
-partial def snoc (t : FingerTree) (a : Elem) : FingerTree :=
+def snoc [Measurable α] (t : FingerTree α) (a : α) : FingerTree α :=
   match t with
   | empty => single a
-  | single b => mkDeep (.one b) (fun _ => .empty) (.one a)
+  | single b => mkDeep (.one b) .empty (.one a)
   | deep m pr sp sf =>
     match sf with
-    | .one b => deep (m + a.measure) pr sp (.two b a)
-    | .two b c => deep (m + a.measure) pr sp (.three b c a)
-    | .three b c e => deep (m + a.measure) pr sp (.four b c e a)
+    | .one b => deep (m + Measurable.measure a) pr sp (.two b a)
+    | .two b c => deep (m + Measurable.measure a) pr sp (.three b c a)
+    | .three b c e => deep (m + Measurable.measure a) pr sp (.four b c e a)
     | .four b c e f =>
-      let node := mkNode3 b c e
-      let newSpine := fun _ => spineSnoc (sp ()) node
+      let node := Node.mk3 b c e
+      let newSpine := sp.snoc node
       mkDeep pr newSpine (.two f a)
 
-/-! ### Views -/
-
-/-- View from the left -/
-inductive ViewL
-  | nil : ViewL
-  | cons : Elem → FingerTree → ViewL
+inductive ViewL (α : Type)
+  | nil : ViewL α
+  | cons : α → FingerTree α → ViewL α
   deriving Inhabited
 
-/-- View from the right -/
-inductive ViewR
-  | nil : ViewR
-  | snoc : FingerTree → Elem → ViewR
+inductive ViewR (α : Type)
+  | nil : ViewR α
+  | snoc : FingerTree α → α → ViewR α
   deriving Inhabited
 
-/-- Convert a digit to a tree -/
-def digitToTree : Digit → FingerTree
+def digitToTree [Measurable α] : Digit α → FingerTree α
   | .one a => single a
-  | .two a b => mkDeep (.one a) (fun _ => .empty) (.one b)
-  | .three a b c => mkDeep (.two a b) (fun _ => .empty) (.one c)
-  | .four a b c d => mkDeep (.two a b) (fun _ => .empty) (.two c d)
+  | .two a b => mkDeep (.one a) .empty (.one b)
+  | .three a b c => mkDeep (.two a b) .empty (.one c)
+  | .four a b c d => mkDeep (.two a b) .empty (.two c d)
 
-/-- View from the left with helper -/
-partial def viewL (t : FingerTree) : ViewL :=
+def viewL [Measurable α] (t : FingerTree α) : ViewL α :=
   match t with
   | empty => .nil
   | single a => .cons a empty
   | deep _ pr sp sf =>
-    let rest := deepL pr.tail? sp sf
-    .cons pr.head rest
-where
-  deepL (pr : Option Digit) (sp : Unit → Spine) (sf : Digit) : FingerTree :=
-    match pr with
-    | some pr' => mkDeep pr' sp sf
+    match pr.tail? with
+    | some pr' => .cons pr.head (mkDeep pr' sp sf)
     | none =>
-      match spineViewL (sp ()) with
-      | .nil => digitToTree sf
-      | .cons node rest => mkDeep node.toDigit (fun _ => rest) sf
+      match sp.viewL with
+      | none => .cons pr.head (digitToTree sf)
+      | some (node, rest) => .cons pr.head (mkDeep node.toDigit rest sf)
 
-/-- View from the right with helper -/
-partial def viewR (t : FingerTree) : ViewR :=
+def viewR [Measurable α] (t : FingerTree α) : ViewR α :=
   match t with
   | empty => .nil
   | single a => .snoc empty a
   | deep _ pr sp sf =>
-    let rest := deepR pr sp sf.init?
-    .snoc rest sf.last
-where
-  deepR (pr : Digit) (sp : Unit → Spine) (sf : Option Digit) : FingerTree :=
-    match sf with
-    | some sf' => mkDeep pr sp sf'
+    match sf.init? with
+    | some sf' => .snoc (mkDeep pr sp sf') sf.last
     | none =>
-      match spineViewR (sp ()) with
-      | .nil => digitToTree pr
-      | .snoc rest node => mkDeep pr (fun _ => rest) node.toDigit
+      match sp.viewR with
+      | none => .snoc (digitToTree pr) sf.last
+      | some (rest, node) => .snoc (mkDeep pr rest node.toDigit) sf.last
 
-/-- Get head element -/
-def head? (t : FingerTree) : Option Elem :=
+def head? [Measurable α] (t : FingerTree α) : Option α :=
   match viewL t with
   | .nil => none
   | .cons a _ => some a
 
-/-- Get tail -/
-def tail? (t : FingerTree) : Option FingerTree :=
+def tail? [Measurable α] (t : FingerTree α) : Option (FingerTree α) :=
   match viewL t with
   | .nil => none
   | .cons _ rest => some rest
 
-/-- Get last element -/
-def last? (t : FingerTree) : Option Elem :=
+def last? [Measurable α] (t : FingerTree α) : Option α :=
   match viewR t with
   | .nil => none
   | .snoc _ a => some a
 
-/-- Get init (all but last) -/
-def init? (t : FingerTree) : Option FingerTree :=
+def init? [Measurable α] (t : FingerTree α) : Option (FingerTree α) :=
   match viewR t with
   | .nil => none
   | .snoc rest _ => some rest
 
-/-! ### Concatenation -/
+private def nodes [Measurable α] : List α → Array (Node α)
+  | [a, b] => #[Node.mk2 a b]
+  | [a, b, c] => #[Node.mk3 a b c]
+  | [a, b, c, d] => #[Node.mk2 a b, Node.mk2 c d]
+  | a :: b :: c :: rest => #[Node.mk3 a b c] ++ nodes rest
+  | _ => #[]
 
-/-- Convert list of Elems to nodes -/
-private def nodes : List Elem → List Node
-  | [a, b] => [Node.mk2 a b]
-  | [a, b, c] => [Node.mk3 a b c]
-  | [a, b, c, d] => [Node.mk2 a b, Node.mk2 c d]
-  | a :: b :: c :: rest => Node.mk3 a b c :: nodes rest
-  | _ => []
+private def appendList [Measurable α] (t : FingerTree α) (l : List α) : FingerTree α :=
+  l.foldl snoc t
 
-/-- Convert list of Nodes to higher-level nodes -/
-private def nodeNodes : List Node → List Node
-  | [a, b] => [mkNodeNode2 a b]
-  | [a, b, c] => [mkNodeNode3 a b c]
-  | [a, b, c, d] => [mkNodeNode2 a b, mkNodeNode2 c d]
-  | a :: b :: c :: rest => mkNodeNode3 a b c :: nodeNodes rest
-  | _ => []
+private def prependList [Measurable α] (l : List α) (t : FingerTree α) : FingerTree α :=
+  l.foldr cons t
 
-/-- Append list to tree -/
-private partial def appendList : FingerTree → List Elem → FingerTree
-  | t, [] => t
-  | t, a :: as => appendList (snoc t a) as
-
-/-- Prepend list to tree -/
-private partial def prependList : List Elem → FingerTree → FingerTree
-  | [], t => t
-  | a :: as, t => cons a (prependList as t)
-
-/-- Append list of nodes to spine -/
-private partial def appendSpineList : Spine → List Node → Spine
-  | sp, [] => sp
-  | sp, n :: ns => appendSpineList (spineSnoc sp n) ns
-
-/-- Prepend list of nodes to spine -/
-private partial def prependSpineList : List Node → Spine → Spine
-  | [], sp => sp
-  | n :: ns, sp => spineCons n (prependSpineList ns sp)
-
-/-- Concatenate spines with middle nodes -/
-partial def appendSpine3 (sp1 : Spine) (mid : List Node) (sp2 : Spine) : Spine :=
-  match sp1, sp2 with
-  | .empty, _ => prependSpineList mid sp2
-  | _, .empty => appendSpineList sp1 mid
-  | .single a, _ => spineCons a (prependSpineList mid sp2)
-  | _, .single a => spineSnoc (appendSpineList sp1 mid) a
-  | .deep _ pr1 sp1Thunk sf1, .deep _ pr2 sp2Thunk sf2 =>
-    let mid' := sf1.toList ++ mid ++ pr2.toList
-    mkSpineDeep pr1 (fun _ => appendSpine3 (sp1Thunk ()) (nodeNodes mid') (sp2Thunk ())) sf2
-
-/-- Concatenate with middle elements -/
-partial def append3 (t1 : FingerTree) (mid : List Elem) (t2 : FingerTree) : FingerTree :=
+def append3 [Measurable α] (t1 : FingerTree α) (mid : List α) (t2 : FingerTree α) : FingerTree α :=
   match t1, t2 with
   | empty, _ => prependList mid t2
   | _, empty => appendList t1 mid
@@ -535,158 +309,94 @@ partial def append3 (t1 : FingerTree) (mid : List Elem) (t2 : FingerTree) : Fing
   | _, single a => snoc (appendList t1 mid) a
   | deep _ pr1 sp1 sf1, deep _ pr2 sp2 sf2 =>
     let mid' := sf1.toList ++ mid ++ pr2.toList
-    mkDeep pr1 (fun _ => appendSpine3 (sp1 ()) (nodes mid') (sp2 ())) sf2
+    let midNodes := Spine.fromArray (nodes mid')
+    let newSpine := sp1.append midNodes |>.append sp2
+    mkDeep pr1 newSpine sf2
 
-/-- Concatenate two trees -/
-def append (t1 t2 : FingerTree) : FingerTree :=
+def append [Measurable α] (t1 t2 : FingerTree α) : FingerTree α :=
   append3 t1 [] t2
 
-instance : Append FingerTree where
+instance [Measurable α] : Append (FingerTree α) where
   append := append
 
-/-! ### Splitting -/
-
-/-- Split result -/
-structure Split where
-  left : FingerTree
-  pivot : Elem
-  right : FingerTree
+structure Split (α : Type) where
+  left : FingerTree α
+  pivot : α
+  right : FingerTree α
   deriving Inhabited
 
-/-- Digit split result -/
-private structure DigitSplit where
-  left : List Elem
-  pivot : Elem
-  right : List Elem
+private structure DigitSplit (α : Type) where
+  left : List α
+  pivot : α
+  right : List α
 
-/-- Node split result -/
-private structure NodeSplit where
-  left : List Node
-  pivot : Node
-  right : List Node
-
-/-- Split a digit -/
-private def splitDigit (p : Measure → Bool) (acc : Measure) : Digit → DigitSplit
+private def splitDigit [Measurable α] (p : Measure → Bool) (acc : Measure) : Digit α → DigitSplit α
   | .one a => ⟨[], a, []⟩
   | .two a b =>
-    let acc' := acc + a.measure
+    let acc' := acc + Measurable.measure a
     if p acc' then ⟨[], a, [b]⟩ else ⟨[a], b, []⟩
   | .three a b c =>
-    let acc' := acc + a.measure
+    let acc' := acc + Measurable.measure a
     if p acc' then ⟨[], a, [b, c]⟩
     else
-      let acc'' := acc' + b.measure
+      let acc'' := acc' + Measurable.measure b
       if p acc'' then ⟨[a], b, [c]⟩ else ⟨[a, b], c, []⟩
   | .four a b c d =>
-    let acc' := acc + a.measure
+    let acc' := acc + Measurable.measure a
     if p acc' then ⟨[], a, [b, c, d]⟩
     else
-      let acc'' := acc' + b.measure
+      let acc'' := acc' + Measurable.measure b
       if p acc'' then ⟨[a], b, [c, d]⟩
       else
-        let acc''' := acc'' + c.measure
+        let acc''' := acc'' + Measurable.measure c
         if p acc''' then ⟨[a, b], c, [d]⟩ else ⟨[a, b, c], d, []⟩
 
-/-- Split a node digit -/
-private def splitNodeDigit (p : Measure → Bool) (acc : Measure) : NodeDigit → NodeSplit
-  | .one a => ⟨[], a, []⟩
-  | .two a b =>
-    let acc' := acc + a.measure
-    if p acc' then ⟨[], a, [b]⟩ else ⟨[a], b, []⟩
-  | .three a b c =>
-    let acc' := acc + a.measure
-    if p acc' then ⟨[], a, [b, c]⟩
-    else
-      let acc'' := acc' + b.measure
-      if p acc'' then ⟨[a], b, [c]⟩ else ⟨[a, b], c, []⟩
-  | .four a b c d =>
-    let acc' := acc + a.measure
-    if p acc' then ⟨[], a, [b, c, d]⟩
-    else
-      let acc'' := acc' + b.measure
-      if p acc'' then ⟨[a], b, [c, d]⟩
-      else
-        let acc''' := acc'' + c.measure
-        if p acc''' then ⟨[a, b], c, [d]⟩ else ⟨[a, b, c], d, []⟩
+def fromList [Measurable α] (l : List α) : FingerTree α :=
+  l.foldl snoc empty
 
-/-- Build tree from list -/
-def fromList : List Elem → FingerTree
-  | [] => empty
-  | as => as.foldl snoc empty
+def fromArray [Measurable α] (arr : Array α) : FingerTree α :=
+  arr.foldl snoc empty
 
-/-- Helper to create a deep tree handling empty prefix for splitting -/
-private partial def deepLSplit (pr : Option Digit) (sp : Unit → Spine) (sf : Digit) : FingerTree :=
+private def deepL [Measurable α] (pr : Option (Digit α)) (sp : Spine α) (sf : Digit α) : FingerTree α :=
   match pr with
   | some pr' => mkDeep pr' sp sf
   | none =>
-    match spineViewL (sp ()) with
-    | .nil => digitToTree sf
-    | .cons node rest => mkDeep node.toDigit (fun _ => rest) sf
+    match sp.viewL with
+    | none => digitToTree sf
+    | some (node, rest) => mkDeep node.toDigit rest sf
 
-/-- Helper to create a deep tree handling empty suffix for splitting -/
-private partial def deepRSplit (pr : Digit) (sp : Unit → Spine) (sf : Option Digit) : FingerTree :=
+private def deepR [Measurable α] (pr : Digit α) (sp : Spine α) (sf : Option (Digit α)) : FingerTree α :=
   match sf with
   | some sf' => mkDeep pr sp sf'
   | none =>
-    match spineViewR (sp ()) with
-    | .nil => digitToTree pr
-    | .snoc rest node => mkDeep pr (fun _ => rest) node.toDigit
+    match sp.viewR with
+    | none => digitToTree pr
+    | some (rest, node) => mkDeep pr rest node.toDigit
 
-/-- Helper to build spine from node list -/
-private def spineFromNodeList : List Node → Spine
-  | [] => .empty
-  | ns => ns.foldl spineSnoc .empty
+private structure SpineSplit (α : Type) where
+  left : Spine α
+  pivot : Node α
+  right : Spine α
 
-/-- Deep spine handling empty prefix -/
-private partial def spineDeepLSplit (pr : Option NodeDigit) (sp : Unit → Spine) (sf : NodeDigit) : Spine :=
-  match pr with
-  | some pr' => mkSpineDeep pr' sp sf
-  | none =>
-    match spineViewL (sp ()) with
-    | .nil => nodeDigitToSpine sf
-    | .cons node rest => mkSpineDeep (NodeDigit.one node) (fun _ => rest) sf
-
-/-- Deep spine handling empty suffix -/
-private partial def spineDeepRSplit (pr : NodeDigit) (sp : Unit → Spine) (sf : Option NodeDigit) : Spine :=
-  match sf with
-  | some sf' => mkSpineDeep pr sp sf'
-  | none =>
-    match spineViewR (sp ()) with
-    | .nil => nodeDigitToSpine pr
-    | .snoc rest node => mkSpineDeep pr (fun _ => rest) (NodeDigit.one node)
-
-/-- Spine split result -/
-private structure SpineSplit where
-  left : Spine
-  pivot : Node
-  right : Spine
-  deriving Inhabited
-
-/-- Split spine -/
-private partial def splitSpineAux (p : Measure → Bool) (acc : Measure) (sp : Spine) : SpineSplit :=
-  match sp with
-  | .empty => panic! "splitSpineAux called on empty spine"
-  | .single n => ⟨.empty, n, .empty⟩
-  | .deep _ pr spThunk sf =>
-    let accPr := acc + pr.measure
-    if p accPr then
-      let ⟨l, x, r⟩ := splitNodeDigit p acc pr
-      ⟨spineFromNodeList l, x, spineDeepLSplit (NodeDigit.fromList? r) spThunk sf⟩
-    else
-      let spTree := spThunk ()
-      let accPrSp := accPr + spTree.measure
-      if p accPrSp then
-        let ⟨spl, node, spr⟩ := splitSpineAux p accPr spTree
-        let accNode := accPr + spl.measure
-        let nodeDigit := NodeDigit.one node
-        let ⟨l, x, r⟩ := splitNodeDigit p accNode nodeDigit
-        ⟨spineDeepRSplit pr (fun _ => spl) (NodeDigit.fromList? l), x, spineDeepLSplit (NodeDigit.fromList? r) (fun _ => spr) sf⟩
+private def splitSpine (p : Measure → Bool) (acc : Measure) (sp : Spine α) : Option (SpineSplit α) :=
+  if sp.isEmpty then none
+  else splitSpineAux p acc sp.nodes 0 Measure.empty #[]
+where
+  splitSpineAux (p : Measure → Bool) (acc : Measure) (nodes : Array (Node α))
+      (idx : Nat) (runningMeasure : Measure) (leftNodes : Array (Node α)) : Option (SpineSplit α) :=
+    if h : idx < nodes.size then
+      let node := nodes[idx]
+      let newMeasure := runningMeasure + node.measure
+      if p (acc + newMeasure) then
+        let rightNodes := nodes.extract (idx + 1) nodes.size
+        some ⟨Spine.fromArray leftNodes, node, Spine.fromArray rightNodes⟩
       else
-        let ⟨l, x, r⟩ := splitNodeDigit p accPrSp sf
-        ⟨spineDeepRSplit pr spThunk (NodeDigit.fromList? l), x, spineFromNodeList r⟩
+        splitSpineAux p acc nodes (idx + 1) newMeasure (leftNodes.push node)
+    else
+      none
+  termination_by nodes.size - idx
 
-/-- Internal split - panics on empty tree -/
-private partial def splitTreeAux (p : Measure → Bool) (acc : Measure) (t : FingerTree) : Split :=
+private def splitTreeAux [Measurable α] [Inhabited α] (p : Measure → Bool) (acc : Measure) (t : FingerTree α) : Split α :=
   match t with
   | empty => panic! "splitTreeAux called on empty tree"
   | single a => ⟨empty, a, empty⟩
@@ -694,28 +404,29 @@ private partial def splitTreeAux (p : Measure → Bool) (acc : Measure) (t : Fin
     let accPr := acc + pr.measure
     if p accPr then
       let ⟨l, x, r⟩ := splitDigit p acc pr
-      ⟨fromList l, x, deepLSplit (Digit.fromList? r) sp sf⟩
+      ⟨fromList l, x, deepL (Digit.fromList? r) sp sf⟩
     else
-      let spTree := sp ()
-      let accPrSp := accPr + spTree.measure
+      let accPrSp := accPr + sp.measure
       if p accPrSp then
-        let ⟨spl, node, spr⟩ := splitSpineAux p accPr spTree
-        let accNode := accPr + spl.measure
-        let nodeDigit := node.toDigit
-        let ⟨l, x, r⟩ := splitDigit p accNode nodeDigit
-        ⟨deepRSplit pr (fun _ => spl) (Digit.fromList? l), x, deepLSplit (Digit.fromList? r) (fun _ => spr) sf⟩
+        match splitSpine p accPr sp with
+        | none =>
+          -- Spine split failed, fall through to suffix
+          let ⟨l, x, r⟩ := splitDigit p accPrSp sf
+          ⟨deepR pr sp (Digit.fromList? l), x, fromList r⟩
+        | some ⟨spl, node, spr⟩ =>
+          let accNode := accPr + spl.measure
+          let ⟨l, x, r⟩ := splitDigit p accNode node.toDigit
+          ⟨deepR pr spl (Digit.fromList? l), x, deepL (Digit.fromList? r) spr sf⟩
       else
         let ⟨l, x, r⟩ := splitDigit p accPrSp sf
-        ⟨deepRSplit pr sp (Digit.fromList? l), x, fromList r⟩
+        ⟨deepR pr sp (Digit.fromList? l), x, fromList r⟩
 
-/-- Split tree at predicate -/
-def split (p : Measure → Bool) (t : FingerTree) : Option Split :=
+def split [Measurable α] [Inhabited α] (p : Measure → Bool) (t : FingerTree α) : Option (Split α) :=
   if t.isEmpty then none
   else if !p t.measure then none
   else some (splitTreeAux p Measure.empty t)
 
-/-- Split at byte position -/
-def splitAtBytes (n : Nat) (t : FingerTree) : Option Split :=
+def splitAtBytes [Measurable α] [Inhabited α] (n : Nat) (t : FingerTree α) : Option (Split α) :=
   if n == 0 then
     match viewL t with
     | .nil => none
@@ -723,8 +434,7 @@ def splitAtBytes (n : Nat) (t : FingerTree) : Option Split :=
   else
     split (fun m => m.bytes >= n) t
 
-/-- Split at line number -/
-def splitAtLine (n : Nat) (t : FingerTree) : Option Split :=
+def splitAtLine [Measurable α] [Inhabited α] (n : Nat) (t : FingerTree α) : Option (Split α) :=
   if n == 0 then
     match viewL t with
     | .nil => none
@@ -732,21 +442,34 @@ def splitAtLine (n : Nat) (t : FingerTree) : Option Split :=
   else
     split (fun m => m.lines >= n) t
 
-/-! ### Conversion -/
-
-/-- Convert to list -/
-partial def toList (t : FingerTree) : List Elem :=
+partial def toList [Measurable α] (t : FingerTree α) : List α :=
   match viewL t with
   | .nil => []
   | .cons a rest => a :: toList rest
 
-/-- Fold left -/
-def foldl (f : β → Elem → β) (init : β) (t : FingerTree) : β :=
+partial def toArray [Measurable α] (t : FingerTree α) : Array α :=
+  toArrayAux t #[]
+where
+  toArrayAux (t : FingerTree α) (acc : Array α) : Array α :=
+    match viewL t with
+    | .nil => acc
+    | .cons a rest => toArrayAux rest (acc.push a)
+
+def foldl [Measurable α] (f : β → α → β) (init : β) (t : FingerTree α) : β :=
   t.toList.foldl f init
 
-/-- Fold right -/
-def foldr (f : Elem → β → β) (init : β) (t : FingerTree) : β :=
+def foldr [Measurable α] (f : α → β → β) (init : β) (t : FingerTree α) : β :=
   t.toList.foldr f init
+
+def size [Measurable α] (t : FingerTree α) : Nat :=
+  match t with
+  | empty => 0
+  | single _ => 1
+  | deep _ pr sp sf =>
+    let prSize := pr.toList.length
+    let spSize := sp.nodes.foldl (fun acc n => acc + n.toList.length) 0
+    let sfSize := sf.toList.length
+    prSize + spSize + sfSize
 
 end FingerTree
 

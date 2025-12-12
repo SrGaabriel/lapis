@@ -7,6 +7,35 @@
   Built on Lean 4's IO.Promise for synchronization and atomic IO.Ref operations.
 -/
 
+namespace Lapis.Concurrent
+
+/-- An atomic counter for generating unique IDs -/
+structure AtomicCounter where
+  value : IO.Ref Nat
+
+namespace AtomicCounter
+
+/-- Create a new counter starting at 0 -/
+def new : IO AtomicCounter := do
+  let ref ← IO.mkRef 0
+  return ⟨ref⟩
+
+/-- Create a new counter starting at a given value -/
+def newFrom (start : Nat) : IO AtomicCounter := do
+  let ref ← IO.mkRef start
+  return ⟨ref⟩
+
+/-- Atomically increment and return the previous value -/
+def incrementAndGet (c : AtomicCounter) : IO Nat := do
+  c.value.modifyGet fun n => (n, n + 1)
+
+/-- Get the current value without incrementing -/
+def get (c : AtomicCounter) : IO Nat := c.value.get
+
+end AtomicCounter
+
+end Lapis.Concurrent
+
 namespace Lapis.Concurrent.Channel
 
 /-! ## Unbounded Channel -/
@@ -222,18 +251,5 @@ end Oneshot
 inductive SelectResult (α β : Type) where
   | first : α → SelectResult α β
   | second : β → SelectResult α β
-
-/-- Wait on two unbounded channels, return whichever has a message first.
-    Note: This is a polling implementation. -/
-partial def selectTwo (ch1 : Unbounded α) (ch2 : Unbounded β) : IO (SelectResult α β) := do
-  match ← ch1.tryRecv with
-  | some msg => return .first msg
-  | none =>
-    match ← ch2.tryRecv with
-    | some msg => return .second msg
-    | none =>
-      -- Brief sleep to avoid busy waiting
-      IO.sleep 1
-      selectTwo ch1 ch2
 
 end Lapis.Concurrent.Channel

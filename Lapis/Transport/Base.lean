@@ -93,12 +93,4 @@ def shutdown (ch : OutputChannel) : IO Unit := do
 
 end OutputChannel
 
-partial def messageLoop [Transport T] (transport : T) (handler : Message → IO (Option Message)) : IO Unit := do
-  match ← Transport.readMessage transport with
-  | none => return () -- EOF
-  | some msg =>
-    if let some response ← handler msg then
-      Transport.writeMessage transport response
-    messageLoop transport handler
-
 end Lapis.Transport

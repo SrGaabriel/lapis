@@ -105,7 +105,7 @@ def create (uri : String) (languageId : String) (version : Int) (content : Strin
 def byteLength (doc : Document) : Nat := doc.pieceTable.byteLength
 
 /-- Get total line count -/
-def lineCount (doc : Document) : Nat := doc.lineIndex.totalLines
+def lineCount (doc : Document) : Nat := doc.lineIndex.lineCount
 
 /-- Get full document content as string -/
 def getContent (doc : Document) : String := doc.pieceTable.getContent
@@ -142,29 +142,16 @@ def applyByteEdit (doc : Document) (startByte endByte : Nat) (newText : String) 
   -- Apply the edit to the piece table
   let newPt := doc.pieceTable.replaceRange startByte endByte newText
 
-  -- Calculate line delta
-  let oldLineBreaks := countNewlines (doc.pieceTable.getTextByteRange startByte endByte)
-  let newLineBreaks := countNewlines newText
-  let lineDelta : Int := newLineBreaks - oldLineBreaks
-
-  -- Find affected lines
-  let startLine := findLineForOffset doc.lineIndex startByte
-  let endLine := findLineForOffset doc.lineIndex endByte
-
-  -- Update line index
-  let newLi := if doc.lineIndex.shouldRebuild then
-    LineIndex.build newPt.getContent
-  else
-    doc.lineIndex.markDirty startLine endLine lineDelta
+  -- Update line index incrementally
+  let oldLength := endByte - startByte
+  let newDocLength := newPt.byteLength
+  let newLi := doc.lineIndex.applyEdit startByte oldLength newText newDocLength
 
   { doc with
     version := newVersion
     pieceTable := newPt
     lineIndex := newLi
   }
-where
-  countNewlines (s : String) : Int :=
-    s.foldl (fun count c => if c == '\n' then count + 1 else count) 0
 
 /-- Apply an edit using LSP positions -/
 def applyEdit (doc : Document) (range : LspRange) (newText : String) (newVersion : Int) : Document :=

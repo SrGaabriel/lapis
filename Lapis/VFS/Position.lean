@@ -12,7 +12,7 @@ import Lapis.VFS.PieceTable
 
 namespace Lapis.VFS.Position
 
-open LineIndex PieceTable
+open LineIndex LineIndex.LineIndex PieceTable
 
 /-! ## UTF-16 Utilities -/
 
@@ -32,7 +32,7 @@ where
     if bytePos >= utf8Offset then
       utf16Pos
     else if h : charIdx < s.length then
-      let c := s.get ⟨charIdx⟩
+      let c := String.Pos.Raw.get s ⟨charIdx⟩
       let charBytes := c.utf8Size
       let charUtf16 := if c.toNat >= 0x10000 then 2 else 1
       utf8ToUtf16Aux s (charIdx + 1) (bytePos + charBytes) (utf16Pos + charUtf16)
@@ -48,7 +48,7 @@ where
     if utf16Pos >= utf16Offset then
       bytePos
     else if h : charIdx < s.length then
-      let c := s.get ⟨charIdx⟩
+      let c := String.Pos.Raw.get s ⟨charIdx⟩
       let charBytes := c.utf8Size
       let charUtf16 := if c.toNat >= 0x10000 then 2 else 1
       utf16ToUtf8Aux s (charIdx + 1) (bytePos + charBytes) (utf16Pos + charUtf16)
@@ -63,8 +63,8 @@ where
   bytesUpToCharAux (s : String) (idx : Nat) (bytes : Nat) : Nat :=
     if idx >= charIdx then
       bytes
-    else if h : idx < s.length then
-      let c := s.get ⟨idx⟩
+    else if idx < s.length then
+      let c := String.Pos.Raw.get s ⟨idx⟩
       bytesUpToCharAux s (idx + 1) (bytes + c.utf8Size)
     else
       bytes
@@ -113,10 +113,7 @@ namespace ConversionContext
 def getLineContent (ctx : ConversionContext) (line : Nat) : Option String :=
   match getLineByteRange ctx.lineIndex line with
   | none => none
-  | some (startByte, endByteSentinel) =>
-    -- Clamp end to actual document length
-    let docLen := ctx.pieceTable.byteLength
-    let endByte := min endByteSentinel docLen
+  | some (startByte, endByte) =>
     if startByte >= endByte then
       some ""
     else
@@ -198,7 +195,7 @@ def clampOffset (ctx : ConversionContext) (offset : Nat) : Nat :=
 
 /-- Check if a position is valid for the document -/
 def isValidPosition (ctx : ConversionContext) (pos : LspPosition) : Bool :=
-  pos.line < ctx.lineIndex.totalLines &&
+  pos.line < ctx.lineIndex.lineCount &&
   match positionToByteOffset ctx pos with
   | some offset => offset <= ctx.pieceTable.byteLength
   | none => false
