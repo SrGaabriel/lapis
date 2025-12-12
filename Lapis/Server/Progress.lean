@@ -88,8 +88,6 @@ structure ProgressManager where
   outputChannel : OutputChannel
   /-- Pending responses for create requests -/
   pendingResponses : PendingResponses
-  /-- Mutex for state modifications -/
-  mutex : AsyncMutex
 
 namespace ProgressManager
 
@@ -97,15 +95,13 @@ namespace ProgressManager
 def new (outputChannel : OutputChannel) (pendingResponses : PendingResponses) : IO ProgressManager := do
   let activeProgress ← IO.mkRef (HashMap.emptyWithCapacity 16)
   let tokenCounter ← IO.mkRef 0
-  let mutex ← AsyncMutex.new
-  return { activeProgress, tokenCounter, outputChannel, pendingResponses, mutex }
+  return { activeProgress, tokenCounter, outputChannel, pendingResponses }
 
 /-- Generate a unique progress token -/
 def generateToken (pm : ProgressManager) : IO ProgressToken := do
-  pm.mutex.withLock do
-    let n ← pm.tokenCounter.get
-    pm.tokenCounter.set (n + 1)
-    return .number (Int.ofNat n)
+  -- Atomically get and increment counter
+  let n ← pm.tokenCounter.modifyGet fun n => (n, n + 1)
+  return .number (Int.ofNat n)
 
 /-- Send a progress notification -/
 private def sendProgress (pm : ProgressManager) (token : ProgressToken) (value : Json) : IO Unit := do
@@ -143,8 +139,7 @@ def begin (pm : ProgressManager) (token : ProgressToken) (title : String)
     token, title, cancellable, cancelled, started := true
   }
 
-  pm.mutex.withLock do
-    pm.activeProgress.modify fun m => m.insert (toString token) state
+  pm.activeProgress.modify fun m => m.insert (toString token) state
 
   let beginValue : WorkDoneProgressBegin := {
     title
@@ -164,8 +159,7 @@ def report (pm : ProgressManager) (token : ProgressToken)
 /-- End a progress operation -/
 def «end» (pm : ProgressManager) (token : ProgressToken)
     (message : Option String := none) : IO Unit := do
-  pm.mutex.withLock do
-    pm.activeProgress.modify fun m => m.erase (toString token)
+  pm.activeProgress.modify fun m => m.erase (toString token)
 
   let endValue : WorkDoneProgressEnd := { message }
   pm.sendProgress token (toJson endValue)

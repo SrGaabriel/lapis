@@ -42,16 +42,13 @@ structure DiagnosticsManager where
   config : DiagnosticsConfig
   /-- Output channel for publishing -/
   outputChannel : OutputChannel
-  /-- Mutex for state modifications -/
-  mutex : AsyncMutex
 
 namespace DiagnosticsManager
 
 /-- Create a new diagnostics manager -/
 def new (outputChannel : OutputChannel) (config : DiagnosticsConfig := {}) : IO DiagnosticsManager := do
   let pendingJobs ← IO.mkRef (HashMap.emptyWithCapacity 32)
-  let mutex ← AsyncMutex.new
-  return { pendingJobs, config, outputChannel, mutex }
+  return { pendingJobs, config, outputChannel }
 
 /-- Publish diagnostics for a document -/
 private def publish (dm : DiagnosticsManager) (uri : DocumentUri)
@@ -65,11 +62,11 @@ private def publish (dm : DiagnosticsManager) (uri : DocumentUri)
 
 /-- Cancel any pending diagnostic job for a URI -/
 def cancel (dm : DiagnosticsManager) (uri : DocumentUri) : IO Unit := do
-  dm.mutex.withLock do
-    let jobs ← dm.pendingJobs.get
-    if let some job := jobs.get? uri then
-      job.cancelled.set true
-      dm.pendingJobs.modify fun m => m.erase uri
+
+  let maybeJob ← dm.pendingJobs.modifyGet fun jobs =>
+    (jobs.get? uri, jobs.erase uri)
+  if let some job := maybeJob then
+    job.cancelled.set true
 
 /-- Clear diagnostics for a document -/
 def clear (dm : DiagnosticsManager) (uri : DocumentUri) : IO Unit := do
@@ -108,9 +105,7 @@ def schedule (dm : DiagnosticsManager) (uri : DocumentUri) (version : Int)
     dm.publish uri (some version) diagnostics
 
   let job : DiagnosticJob := { uri, version, cancelled, task }
-
-  dm.mutex.withLock do
-    dm.pendingJobs.modify fun m => m.insert uri job
+  dm.pendingJobs.modify fun m => m.insert uri job
 
 /-- Schedule diagnostics with a pure computation -/
 def schedulePure (dm : DiagnosticsManager) (uri : DocumentUri) (version : Int)
@@ -140,11 +135,10 @@ def flush (dm : DiagnosticsManager) : IO Unit := do
 
 /-- Cancel all pending diagnostic jobs -/
 def cancelAll (dm : DiagnosticsManager) : IO Unit := do
-  dm.mutex.withLock do
-    let jobs ← dm.pendingJobs.get
-    for (_, job) in jobs.toList do
-      job.cancelled.set true
-    dm.pendingJobs.set {}
+  -- Atomically swap out all jobs
+  let jobs ← dm.pendingJobs.swap {}
+  for (_, job) in jobs.toList do
+    job.cancelled.set true
 
 end DiagnosticsManager
 

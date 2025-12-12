@@ -9,73 +9,89 @@ class Transport (T : Type) where
   writeMessage : T → Message → IO Unit
   close : T → IO Unit
 
-/-- A simple async mutex built on IO.Promise.
-    Guarantees mutual exclusion for critical sections. -/
-structure AsyncMutex where
-  /-- Reference to the current lock state: none = unlocked, some promise = locked -/
-  state : IO.Ref (Option (IO.Promise Unit))
+/-! ## Writer Actor for Output Channel -/
 
-def AsyncMutex.new : BaseIO AsyncMutex := do
-  let state ← IO.mkRef none
-  return { state }
+/-- State for the output writer actor -/
+private structure WriterState where
+  /-- Queue of pending messages -/
+  queue : IO.Ref (Array Message)
+  /-- Signal for new messages -/
+  signal : IO.Ref (IO.Promise Unit)
+  /-- Shutdown flag -/
+  shutdown : IO.Ref Bool
 
-/-- Acquire the lock. Blocks until the lock is available. -/
-partial def AsyncMutex.lock (m : AsyncMutex) : IO Unit := do
-  -- Try to acquire the lock
-  let myPromise ← IO.Promise.new (α := Unit)
-  let prev ← m.state.modifyGet fun s =>
-    match s with
-    | none => (none, some myPromise)  -- We got the lock
-    | some p => (some p, some myPromise)  -- Someone else has it, we'll wait and then take it
-  match prev with
-  | none => return ()  -- We acquired the lock immediately
-  | some p =>
-    -- Wait for the previous holder to release
-    let _ := p.result?.get  -- Block until resolved
-    -- Now try again (the previous holder released, but someone else might have grabbed it)
-    m.lock
-
-/-- Release the lock. -/
-def AsyncMutex.unlock (m : AsyncMutex) : IO Unit := do
-  let prev ← m.state.swap none
-  match prev with
-  | none => return ()  -- Wasn't locked (shouldn't happen in correct usage)
-  | some p => p.resolve ()  -- Wake up any waiters
-
-/-- Run an action while holding the lock. -/
-def AsyncMutex.withLock (m : AsyncMutex) (action : IO α) : IO α := do
-  m.lock
-  try
-    action
-  finally
-    m.unlock
-
-/-- A thread-safe output channel for sending messages to the client.
-    Multiple tasks can safely send messages through this channel. -/
+/-- A thread-safe output channel for sending messages to the client -/
 structure OutputChannel where
-  /-- Mutex to ensure only one message is written at a time -/
-  mutex : AsyncMutex
-  /-- The write function (captured from transport) -/
-  write : Message → IO Unit
+  /-- Writer state -/
+  state : WriterState
+  /-- Writer task -/
+  task : Task (Except IO.Error Unit)
 
-def OutputChannel.new (writeFunc : Message → IO Unit) : IO OutputChannel := do
-  let mutex ← AsyncMutex.new
-  return { mutex, write := writeFunc }
+namespace OutputChannel
 
-/-- Send a message through the output channel (thread-safe) -/
-def OutputChannel.send (ch : OutputChannel) (msg : Message) : IO Unit := do
-  ch.mutex.withLock do
-    ch.write msg
+/-- The writer loop that processes messages -/
+private partial def writerLoop (state : WriterState) (writeFunc : Message → IO Unit) : IO Unit := do
+  -- Check shutdown
+  if ← state.shutdown.get then return
+
+  -- Try to get messages
+  let msgs ← state.queue.swap #[]
+
+  if msgs.isEmpty then
+    -- Wait for signal
+    let sig ← state.signal.get
+    let _ := sig.result!
+    writerLoop state writeFunc
+  else
+    -- Write all messages
+    for msg in msgs do
+      writeFunc msg
+    writerLoop state writeFunc
+
+/-- Create a new output channel with a writer actor -/
+def new (writeFunc : Message → IO Unit) : IO OutputChannel := do
+  let queue ← IO.mkRef #[]
+  let signal ← IO.Promise.new
+  let signalRef ← IO.mkRef signal
+  let shutdown ← IO.mkRef false
+  let state : WriterState := { queue, signal := signalRef, shutdown }
+
+  -- Spawn writer actor
+  let task ← IO.asTask (prio := .default) (writerLoop state writeFunc)
+
+  return { state, task }
+
+/-- Send a message through the output channel (non-blocking) -/
+def send (ch : OutputChannel) (msg : Message) : IO Unit := do
+  -- Add message to queue
+  ch.state.queue.modify (·.push msg)
+  -- Signal the writer
+  let sig ← ch.state.signal.get
+  sig.resolve ()
+  -- Create new signal for next wait
+  let newSig ← IO.Promise.new
+  ch.state.signal.set newSig
 
 /-- Send a notification through the output channel -/
-def OutputChannel.sendNotification (ch : OutputChannel) (method : String) (params : Lean.Json) : IO Unit := do
+def sendNotification (ch : OutputChannel) (method : String) (params : Lean.Json) : IO Unit := do
   let notif : NotificationMessage := { method, params := some params }
   ch.send (.notification notif)
 
 /-- Send a request through the output channel -/
-def OutputChannel.sendRequest (ch : OutputChannel) (id : RequestId) (method : String) (params : Lean.Json) : IO Unit := do
+def sendRequest (ch : OutputChannel) (id : RequestId) (method : String) (params : Lean.Json) : IO Unit := do
   let req : RequestMessage := { id, method, params := some params }
   ch.send (.request req)
+
+/-- Shutdown the writer actor -/
+def shutdown (ch : OutputChannel) : IO Unit := do
+  ch.state.shutdown.set true
+  -- Signal to wake up the writer if it's waiting
+  let sig ← ch.state.signal.get
+  sig.resolve ()
+  -- Wait for writer to finish
+  let _ ← IO.wait ch.task
+
+end OutputChannel
 
 partial def messageLoop [Transport T] (transport : T) (handler : Message → IO (Option Message)) : IO Unit := do
   match ← Transport.readMessage transport with

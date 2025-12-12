@@ -4,24 +4,19 @@
   Provides bounded and unbounded channels for message passing between actors.
   These are the foundation of the actor model implementation.
 
-  Built on Lean 4's IO.Promise for synchronization.
+  Built on Lean 4's IO.Promise for synchronization and atomic IO.Ref operations.
 -/
 
-import Lapis.Transport.Base
-
 namespace Lapis.Concurrent.Channel
-
-open Lapis.Transport
 
 /-! ## Unbounded Channel -/
 
 /-- An unbounded MPSC (multi-producer, single-consumer) channel.
-    Multiple actors can send messages, one actor receives them in order. -/
+    Multiple actors can send messages, one actor receives them in order.
+    Uses atomic IO.Ref operations - no mutex needed. -/
 structure Unbounded (α : Type) where
   /-- Queue of pending messages -/
   queue : IO.Ref (Array α)
-  /-- Mutex for queue access -/
-  mutex : AsyncMutex
   /-- Promise for signaling new messages (recreated after each wait) -/
   signal : IO.Ref (IO.Promise Unit)
 
@@ -30,78 +25,69 @@ namespace Unbounded
 /-- Create a new unbounded channel -/
 def new : IO (Unbounded α) := do
   let queue ← IO.mkRef #[]
-  let mutex ← AsyncMutex.new
   let signal ← IO.Promise.new
   let signalRef ← IO.mkRef signal
-  return { queue, mutex, signal := signalRef }
+  return { queue, signal := signalRef }
 
-/-- Send a message to the channel (non-blocking) -/
+/-- Send a message to the channel (non-blocking).
+    Uses atomic modify - safe for concurrent sends. -/
 def send (ch : Unbounded α) (msg : α) : IO Unit := do
-  ch.mutex.withLock do
-    ch.queue.modify (·.push msg)
-    -- Signal any waiting receiver
-    let sig ← ch.signal.get
-    sig.resolve ()
-    -- Create new signal for next wait
-    let newSig ← IO.Promise.new
-    ch.signal.set newSig
+  -- Atomically add message to queue
+  ch.queue.modify (·.push msg)
+  -- Signal any waiting receiver (resolve is idempotent)
+  let sig ← ch.signal.get
+  sig.resolve ()
 
 /-- Receive a message from the channel (blocking) -/
 partial def recv (ch : Unbounded α) : IO α := do
-  -- Try to get a message
-  let result ← ch.mutex.withLock do
-    let q ← ch.queue.get
+  -- Atomically try to take from queue
+  let result ← ch.queue.modifyGet fun q =>
     if h : 0 < q.size then
-      let msg := q[0]
-      ch.queue.set (q.extract 1 q.size)
-      return some msg
+      (some q[0], q.extract 1 q.size)
     else
-      return none
+      (none, q)
 
   match result with
   | some msg => return msg
   | none =>
-    -- Wait for signal then retry
-    let sig ← ch.signal.get
-    let _ := sig.result!
+    -- No message, wait for signal then retry
+    -- First refresh the signal for next wait
+    let newSig ← IO.Promise.new
+    let oldSig ← ch.signal.swap newSig
+    -- Wait on the old signal
+    let _ := oldSig.result!
     recv ch
 
 /-- Try to receive a message without blocking -/
 def tryRecv (ch : Unbounded α) : IO (Option α) := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
+  ch.queue.modifyGet fun q =>
     if h : 0 < q.size then
-      let msg := q[0]
-      ch.queue.set (q.extract 1 q.size)
-      return some msg
+      (some q[0], q.extract 1 q.size)
     else
-      return none
+      (none, q)
 
 /-- Check if the channel has pending messages -/
 def isEmpty (ch : Unbounded α) : IO Bool := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
-    return q.isEmpty
+  let q ← ch.queue.get
+  return q.isEmpty
 
 /-- Get the number of pending messages -/
 def size (ch : Unbounded α) : IO Nat := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
-    return q.size
+  let q ← ch.queue.get
+  return q.size
 
 end Unbounded
 
 /-! ## Bounded Channel -/
 
 /-- A bounded MPSC channel with backpressure.
-    Senders block when the channel is full. -/
+    Senders block when the channel is full.
+    Uses atomic IO.Ref operations - no mutex needed. -/
 structure Bounded (α : Type) where
   /-- Queue of pending messages -/
   queue : IO.Ref (Array α)
   /-- Maximum capacity -/
   capacity : Nat
-  /-- Mutex for queue access -/
-  mutex : AsyncMutex
   /-- Signal for receivers (queue not empty) -/
   notEmptySignal : IO.Ref (IO.Promise Unit)
   /-- Signal for senders (queue not full) -/
@@ -112,100 +98,88 @@ namespace Bounded
 /-- Create a new bounded channel with given capacity -/
 def new (capacity : Nat) : IO (Bounded α) := do
   let queue ← IO.mkRef #[]
-  let mutex ← AsyncMutex.new
   let notEmpty ← IO.Promise.new
   let notFull ← IO.Promise.new
   let notEmptyRef ← IO.mkRef notEmpty
   let notFullRef ← IO.mkRef notFull
-  return { queue, capacity, mutex, notEmptySignal := notEmptyRef, notFullSignal := notFullRef }
+  return { queue, capacity, notEmptySignal := notEmptyRef, notFullSignal := notFullRef }
 
 /-- Send a message to the channel (blocks if full) -/
 partial def send (ch : Bounded α) (msg : α) : IO Unit := do
-  -- Try to send
-  let couldSend ← ch.mutex.withLock do
-    let q ← ch.queue.get
+  -- Atomically try to add to queue
+  let couldSend ← ch.queue.modifyGet fun q =>
     if q.size < ch.capacity then
-      ch.queue.set (q.push msg)
-      -- Signal receivers
-      let sig ← ch.notEmptySignal.get
-      sig.resolve ()
-      let newSig ← IO.Promise.new
-      ch.notEmptySignal.set newSig
-      return true
+      (true, q.push msg)
     else
-      return false
+      (false, q)
 
   if couldSend then
-    return
+    -- Signal receivers
+    let sig ← ch.notEmptySignal.get
+    sig.resolve ()
   else
     -- Wait for space then retry
-    let sig ← ch.notFullSignal.get
-    let _ := sig.result!
+    let newSig ← IO.Promise.new
+    let oldSig ← ch.notFullSignal.swap newSig
+    let _ := oldSig.result!
     send ch msg
 
 /-- Try to send a message without blocking -/
 def trySend (ch : Bounded α) (msg : α) : IO Bool := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
+  let couldSend ← ch.queue.modifyGet fun q =>
     if q.size < ch.capacity then
-      ch.queue.set (q.push msg)
-      let sig ← ch.notEmptySignal.get
-      sig.resolve ()
-      let newSig ← IO.Promise.new
-      ch.notEmptySignal.set newSig
-      return true
+      (true, q.push msg)
     else
-      return false
+      (false, q)
+
+  if couldSend then
+    let sig ← ch.notEmptySignal.get
+    sig.resolve ()
+  return couldSend
 
 /-- Receive a message from the channel (blocking) -/
 partial def recv (ch : Bounded α) : IO α := do
-  let result ← ch.mutex.withLock do
-    let q ← ch.queue.get
+  let result ← ch.queue.modifyGet fun q =>
     if h : 0 < q.size then
-      let msg := q[0]
-      ch.queue.set (q.extract 1 q.size)
-      -- Signal senders
-      let sig ← ch.notFullSignal.get
-      sig.resolve ()
-      let newSig ← IO.Promise.new
-      ch.notFullSignal.set newSig
-      return some msg
+      (some q[0], q.extract 1 q.size)
     else
-      return none
+      (none, q)
 
   match result with
-  | some msg => return msg
+  | some msg =>
+    -- Signal senders that there's space
+    let sig ← ch.notFullSignal.get
+    sig.resolve ()
+    return msg
   | none =>
-    let sig ← ch.notEmptySignal.get
-    let _ := sig.result!
+    -- Wait for messages
+    let newSig ← IO.Promise.new
+    let oldSig ← ch.notEmptySignal.swap newSig
+    let _ := oldSig.result!
     recv ch
 
 /-- Try to receive a message without blocking -/
 def tryRecv (ch : Bounded α) : IO (Option α) := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
+  let result ← ch.queue.modifyGet fun q =>
     if h : 0 < q.size then
-      let msg := q[0]
-      ch.queue.set (q.extract 1 q.size)
-      let sig ← ch.notFullSignal.get
-      sig.resolve ()
-      let newSig ← IO.Promise.new
-      ch.notFullSignal.set newSig
-      return some msg
+      (some q[0], q.extract 1 q.size)
     else
-      return none
+      (none, q)
+
+  if result.isSome then
+    let sig ← ch.notFullSignal.get
+    sig.resolve ()
+  return result
 
 /-- Check if the channel is full -/
 def isFull (ch : Bounded α) : IO Bool := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
-    return q.size >= ch.capacity
+  let q ← ch.queue.get
+  return q.size >= ch.capacity
 
 /-- Check if the channel is empty -/
 def isEmpty (ch : Bounded α) : IO Bool := do
-  ch.mutex.withLock do
-    let q ← ch.queue.get
-    return q.isEmpty
+  let q ← ch.queue.get
+  return q.isEmpty
 
 end Bounded
 
@@ -234,8 +208,6 @@ def recv (ch : Oneshot α) : IO α := do
 
 /-- Try to receive without blocking (returns none if not yet resolved) -/
 def tryRecv (ch : Oneshot α) : IO (Option α) := do
-  -- result? returns Task (Option α), .get blocks to get the Option α
-  -- We need a non-blocking check, so we use the Task API
   return ch.promise.result?.get
 
 /-- Check if the value has been sent -/

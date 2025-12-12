@@ -29,31 +29,27 @@ open Std (HashMap)
 
 structure PendingRequests where
   ref : IO.Ref (HashMap String IO.CancelToken)
-  mutex : AsyncMutex
 
 def PendingRequests.new : IO PendingRequests := do
   let ref ← IO.mkRef (HashMap.emptyWithCapacity 16)
-  let mutex ← AsyncMutex.new
-  return { ref, mutex }
+  return { ref }
 
 def PendingRequests.add (pr : PendingRequests) (id : String) (token : IO.CancelToken) : IO Unit := do
-  pr.mutex.withLock do
-    pr.ref.modify fun m => m.insert id token
+  pr.ref.modify fun m => m.insert id token
 
 def PendingRequests.remove (pr : PendingRequests) (id : String) : IO Unit := do
-  pr.mutex.withLock do
-    pr.ref.modify fun m => m.erase id
+  pr.ref.modify fun m => m.erase id
 
 def PendingRequests.cancel (pr : PendingRequests) (id : String) : IO Bool := do
-  pr.mutex.withLock do
-    let m ← pr.ref.get
-    match m.get? id with
-    | some token =>
-      token.set
-      pr.ref.modify fun m => m.erase id
-      return true
-    | none =>
-      return false
+  -- Atomically get and remove the token
+  let maybeToken ← pr.ref.modifyGet fun m =>
+    (m.get? id, m.erase id)
+  match maybeToken with
+  | some token =>
+    token.set
+    return true
+  | none =>
+    return false
 
 /-! ## Request Coalescing -/
 
@@ -70,15 +66,14 @@ structure CoalescedRequest where
   requestId : RequestId
   cancelToken : IO.CancelToken
 
-/-- Tracks requests that can be coalesced (hover, definition, etc.) -/
+/-- Tracks requests that can be coalesced (hover, definition, etc.).
+    Uses atomic IO.Ref operations - no mutex needed. -/
 structure RequestCoalescer where
   ref : IO.Ref (HashMap CoalesceKey CoalescedRequest)
-  mutex : AsyncMutex
 
 def RequestCoalescer.new : IO RequestCoalescer := do
   let ref ← IO.mkRef (HashMap.emptyWithCapacity 16)
-  let mutex ← AsyncMutex.new
-  return { ref, mutex }
+  return { ref }
 
 /-- Methods that support coalescing -/
 def coalescableMethods : List String :=
@@ -94,8 +89,7 @@ def extractPosition (params : Json) : Option (String × Nat × Nat) := do
   let char ← pos.getObjValAs? Nat "character" |>.toOption
   return (uri, line, char)
 
-/-- Try to coalesce a request. Returns the cancel token if this request should proceed,
-    or none if it was coalesced away (superseded by a newer request). -/
+/-- Try to coalesce a request. Cancels any existing request for the same key. -/
 def RequestCoalescer.tryCoalesce (rc : RequestCoalescer) (method : String) (params : Json)
     (requestId : RequestId) (cancelToken : IO.CancelToken) : IO Bool := do
   -- Only coalesce certain methods
@@ -108,15 +102,13 @@ def RequestCoalescer.tryCoalesce (rc : RequestCoalescer) (method : String) (para
 
   let key : CoalesceKey := { method, uri, line, character := char }
 
-  rc.mutex.withLock do
-    let map ← rc.ref.get
+  -- Atomically swap in new request, get old one
+  let maybeExisting ← rc.ref.modifyGet fun map =>
+    (map.get? key, map.insert key { requestId, cancelToken })
 
-    -- Cancel any existing request for the same key
-    if let some existing := map.get? key then
-      existing.cancelToken.set
-
-    -- Register this request
-    rc.ref.set (map.insert key { requestId, cancelToken })
+  -- Cancel any existing request for the same key
+  if let some existing := maybeExisting then
+    existing.cancelToken.set
 
   return true
 
@@ -129,9 +121,7 @@ def RequestCoalescer.complete (rc : RequestCoalescer) (method : String) (params 
     | return
 
   let key : CoalesceKey := { method, uri, line, character := char }
-
-  rc.mutex.withLock do
-    rc.ref.modify fun m => m.erase key
+  rc.ref.modify fun m => m.erase key
 
 /-! ## Server Runtime -/
 
@@ -172,7 +162,6 @@ def mkContext (rt : ServerRuntime UserState) (cancelToken : Option IO.CancelToke
     userState
   }
   let stateRef ← IO.mkRef state
-  let stateMutex ← AsyncMutex.new
 
   return {
     capabilities := rt.config.capabilities
@@ -180,7 +169,6 @@ def mkContext (rt : ServerRuntime UserState) (cancelToken : Option IO.CancelToke
     outputChannel := rt.outputChannel
     vfs := rt.vfs
     stateRef
-    stateMutex
     pendingResponses := rt.pendingResponses
     cancelToken
   }
@@ -209,6 +197,7 @@ def isShutdownRequested (rt : ServerRuntime UserState) : IO Bool :=
 
 /-- Shutdown the runtime -/
 def shutdown (rt : ServerRuntime UserState) : IO Unit := do
+  rt.outputChannel.shutdown
   rt.vfs.shutdown
   rt.vfsActor.join
 

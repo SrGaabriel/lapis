@@ -38,10 +38,8 @@ structure ServerContext (UserState : Type) where
   outputChannel : OutputChannel
   /-- VFS reference for document access -/
   vfs : VfsRef
-  /-- Shared state reference -/
+  /-- Shared state reference (atomic operations) -/
   stateRef : IO.Ref (ServerState UserState)
-  /-- Mutex for state modifications that need to be atomic -/
-  stateMutex : AsyncMutex
   /-- Pending responses for client-initiated requests -/
   pendingResponses : PendingResponses
   /-- Cancellation token for the current request (none for notifications or non-cancellable contexts) -/
@@ -53,14 +51,10 @@ abbrev ServerM (UserState : Type) := ReaderT (ServerContext UserState) IO
 /-- Get the server context -/
 def getContext : ServerM UserState (ServerContext UserState) := read
 
-/-- Access state with the mutex held (for compound operations) -/
-def withStateLock (f : ServerState UserState → IO (α × ServerState UserState)) : ServerM UserState α := do
+/-- Access state atomically (for compound operations) -/
+def withStateAtomic (f : ServerState UserState → α × ServerState UserState) : ServerM UserState α := do
   let ctx ← read
-  ctx.stateMutex.withLock do
-    let state ← ctx.stateRef.get
-    let (result, newState) ← f state
-    ctx.stateRef.set newState
-    return result
+  ctx.stateRef.modifyGet f
 
 /-- Get a snapshot of the full server state -/
 def getServerState : ServerM UserState (ServerState UserState) := do

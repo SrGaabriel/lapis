@@ -132,8 +132,6 @@ structure RegistrationManager where
   outputChannel : OutputChannel
   /-- Pending responses -/
   pendingResponses : PendingResponses
-  /-- Mutex for state modifications -/
-  mutex : AsyncMutex
 
 namespace RegistrationManager
 
@@ -141,15 +139,13 @@ namespace RegistrationManager
 def new (outputChannel : OutputChannel) (pendingResponses : PendingResponses) : IO RegistrationManager := do
   let state ← IO.mkRef { registrations := {}, byId := {} : RegistrationState }
   let idCounter ← IO.mkRef 0
-  let mutex ← AsyncMutex.new
-  return { state, idCounter, outputChannel, pendingResponses, mutex }
+  return { state, idCounter, outputChannel, pendingResponses }
 
 /-- Generate a unique registration ID -/
 def generateId (rm : RegistrationManager) (pfx : String := "reg") : IO RegistrationId := do
-  rm.mutex.withLock do
-    let n ← rm.idCounter.get
-    rm.idCounter.set (n + 1)
-    return s!"{pfx}-{n}"
+  -- Atomically get and increment counter
+  let n ← rm.idCounter.modifyGet fun n => (n, n + 1)
+  return s!"{pfx}-{n}"
 
 /-- Send a registration request to the client -/
 private def sendRegister (rm : RegistrationManager) (registrations : Array Registration) : IO Bool := do
@@ -202,11 +198,10 @@ def register (rm : RegistrationManager) (method : String)
   let success ← rm.sendRegister #[reg]
   if !success then return none
 
-  rm.mutex.withLock do
-    rm.state.modify fun s =>
-      let existing := s.registrations.getD method #[]
-      { registrations := s.registrations.insert method (existing.push id)
-        byId := s.byId.insert id reg }
+  rm.state.modify fun s =>
+    let existing := s.registrations.getD method #[]
+    { registrations := s.registrations.insert method (existing.push id)
+      byId := s.byId.insert id reg }
 
   return some id
 
@@ -220,12 +215,11 @@ def unregister (rm : RegistrationManager) (id : RegistrationId) : IO Bool := do
   let success ← rm.sendUnregister #[unreg]
   if !success then return false
 
-  rm.mutex.withLock do
-    rm.state.modify fun s =>
-      let existing := s.registrations.getD reg.method #[]
-      let filtered := existing.filter (· != id)
-      { registrations := s.registrations.insert reg.method filtered
-        byId := s.byId.erase id }
+  rm.state.modify fun s =>
+    let existing := s.registrations.getD reg.method #[]
+    let filtered := existing.filter (· != id)
+    { registrations := s.registrations.insert reg.method filtered
+      byId := s.byId.erase id }
 
   return true
 
@@ -239,11 +233,10 @@ def unregisterAll (rm : RegistrationManager) (method : String) : IO Bool := do
   let success ← rm.sendUnregister unregs
   if !success then return false
 
-  rm.mutex.withLock do
-    rm.state.modify fun s =>
-      let byId := ids.foldl (fun m id => m.erase id) s.byId
-      { registrations := s.registrations.erase method
-        byId := byId }
+  rm.state.modify fun s =>
+    let byId := ids.foldl (fun m id => m.erase id) s.byId
+    { registrations := s.registrations.erase method
+      byId := byId }
 
   return true
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1]
+
+### Bug Fixes
+
+- Fixed deadlock on repeated requests - removed AsyncMutex, replaced with writer actor pattern and atomic IO.Ref operations
+- Replaced `OutputChannel` mutex with dedicated writer actor for message serialization
+- Converted all synchronized data structures to use atomic `IO.Ref.modifyGet` and `IO.Ref.swap` operations
+- Removed `stateMutex` from `ServerContext`
+- Request handlers now run fully in parallel without blocking on output or state operations
+- All 26 tests pass, including rapid edit and concurrent request tests
+
 ## [0.2.0]
 
 ### New Features
