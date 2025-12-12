@@ -11,66 +11,50 @@ class Transport (T : Type) where
 
 /-! ## Writer Actor for Output Channel -/
 
-/-- State for the output writer actor -/
-private structure WriterState where
+/-- A thread-safe output channel for sending messages to the client.
+    Uses a simple polling approach with the queue itself as the signal. -/
+structure OutputChannel where
   /-- Queue of pending messages -/
   queue : IO.Ref (Array Message)
-  /-- Signal for new messages -/
-  signal : IO.Ref (IO.Promise Unit)
   /-- Shutdown flag -/
-  shutdown : IO.Ref Bool
-
-/-- A thread-safe output channel for sending messages to the client -/
-structure OutputChannel where
-  /-- Writer state -/
-  state : WriterState
+  shutdownFlag : IO.Ref Bool
   /-- Writer task -/
   task : Task (Except IO.Error Unit)
 
 namespace OutputChannel
 
 /-- The writer loop that processes messages -/
-private partial def writerLoop (state : WriterState) (writeFunc : Message → IO Unit) : IO Unit := do
+private partial def writerLoop (queue : IO.Ref (Array Message))
+    (shutdownFlag : IO.Ref Bool) (writeFunc : Message → IO Unit) : IO Unit := do
   -- Check shutdown
-  if ← state.shutdown.get then return
+  if ← shutdownFlag.get then return
 
   -- Try to get messages
-  let msgs ← state.queue.swap #[]
+  let msgs ← queue.swap #[]
 
   if msgs.isEmpty then
-    -- Wait for signal
-    let sig ← state.signal.get
-    let _ := sig.result!
-    writerLoop state writeFunc
+    -- No messages, brief sleep and retry
+    IO.sleep 1
+    writerLoop queue shutdownFlag writeFunc
   else
     -- Write all messages
     for msg in msgs do
       writeFunc msg
-    writerLoop state writeFunc
+    writerLoop queue shutdownFlag writeFunc
 
 /-- Create a new output channel with a writer actor -/
 def new (writeFunc : Message → IO Unit) : IO OutputChannel := do
   let queue ← IO.mkRef #[]
-  let signal ← IO.Promise.new
-  let signalRef ← IO.mkRef signal
-  let shutdown ← IO.mkRef false
-  let state : WriterState := { queue, signal := signalRef, shutdown }
+  let shutdownFlag ← IO.mkRef false
 
   -- Spawn writer actor
-  let task ← IO.asTask (prio := .default) (writerLoop state writeFunc)
+  let task ← IO.asTask (prio := .default) (writerLoop queue shutdownFlag writeFunc)
 
-  return { state, task }
+  return { queue, shutdownFlag, task }
 
 /-- Send a message through the output channel (non-blocking) -/
 def send (ch : OutputChannel) (msg : Message) : IO Unit := do
-  -- Add message to queue
-  ch.state.queue.modify (·.push msg)
-  -- Signal the writer
-  let sig ← ch.state.signal.get
-  sig.resolve ()
-  -- Create new signal for next wait
-  let newSig ← IO.Promise.new
-  ch.state.signal.set newSig
+  ch.queue.modify (·.push msg)
 
 /-- Send a notification through the output channel -/
 def sendNotification (ch : OutputChannel) (method : String) (params : Lean.Json) : IO Unit := do
@@ -84,10 +68,7 @@ def sendRequest (ch : OutputChannel) (id : RequestId) (method : String) (params 
 
 /-- Shutdown the writer actor -/
 def shutdown (ch : OutputChannel) : IO Unit := do
-  ch.state.shutdown.set true
-  -- Signal to wake up the writer if it's waiting
-  let sig ← ch.state.signal.get
-  sig.resolve ()
+  ch.shutdownFlag.set true
   -- Wait for writer to finish
   let _ ← IO.wait ch.task
 

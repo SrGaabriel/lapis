@@ -4,7 +4,7 @@
   Provides bounded and unbounded channels for message passing between actors.
   These are the foundation of the actor model implementation.
 
-  Built on Lean 4's IO.Promise for synchronization and atomic IO.Ref operations.
+  Built on Lean 4's IO.Promise for synchronization.
 -/
 
 namespace Lapis.Concurrent.Channel
@@ -12,8 +12,7 @@ namespace Lapis.Concurrent.Channel
 /-! ## Unbounded Channel -/
 
 /-- An unbounded MPSC (multi-producer, single-consumer) channel.
-    Multiple actors can send messages, one actor receives them in order.
-    Uses atomic IO.Ref operations - no mutex needed. -/
+    Multiple actors can send messages, one actor receives them in order. -/
 structure Unbounded (α : Type) where
   /-- Queue of pending messages -/
   queue : IO.Ref (Array α)
@@ -29,8 +28,7 @@ def new : IO (Unbounded α) := do
   let signalRef ← IO.mkRef signal
   return { queue, signal := signalRef }
 
-/-- Send a message to the channel (non-blocking).
-    Uses atomic modify - safe for concurrent sends. -/
+/-- Send a message to the channel (non-blocking) -/
 def send (ch : Unbounded α) (msg : α) : IO Unit := do
   -- Atomically add message to queue
   ch.queue.modify (·.push msg)
@@ -54,8 +52,8 @@ partial def recv (ch : Unbounded α) : IO α := do
     -- First refresh the signal for next wait
     let newSig ← IO.Promise.new
     let oldSig ← ch.signal.swap newSig
-    -- Wait on the old signal
-    let _ := oldSig.result!
+    -- Wait on the old signal (result! returns Task, .get blocks)
+    let _ := oldSig.result!.get
     recv ch
 
 /-- Try to receive a message without blocking -/
@@ -121,7 +119,7 @@ partial def send (ch : Bounded α) (msg : α) : IO Unit := do
     -- Wait for space then retry
     let newSig ← IO.Promise.new
     let oldSig ← ch.notFullSignal.swap newSig
-    let _ := oldSig.result!
+    let _ := oldSig.result!.get
     send ch msg
 
 /-- Try to send a message without blocking -/
@@ -155,7 +153,7 @@ partial def recv (ch : Bounded α) : IO α := do
     -- Wait for messages
     let newSig ← IO.Promise.new
     let oldSig ← ch.notEmptySignal.swap newSig
-    let _ := oldSig.result!
+    let _ := oldSig.result!.get
     recv ch
 
 /-- Try to receive a message without blocking -/

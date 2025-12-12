@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2]
+
+### Bug Fixes
+
+- Fixed hanging on heavy loads
+
 ## [0.2.1]
 
 ### Bug Fixes
