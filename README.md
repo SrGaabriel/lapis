@@ -1,10 +1,21 @@
 # ✏️ lapis
 
-A Language Server Protocol (LSP) framework in Lean 4.
+A minimal, lightweight Language Server Protocol (LSP) framework in Lean 4.
 
 This is just a scaffold for building language servers in Lean 4. It provides the core LSP protocol handling, a virtual file system (VFS) for managing text documents, and utilities for common LSP tasks.
 
 ## 🎨 Usage
+
+Add lapis as a dependency in your `lakefile.toml`:
+
+```toml
+[[require]]
+name = "lapis"
+git = "https://github.com/SrGaabriel/lapis"
+rev = "main"
+```
+
+## 💡 Example
 
 This is a small example of a language server using lapis:
 
