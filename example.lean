@@ -21,7 +21,6 @@ open Lapis.Protocol.Capabilities
 open Lapis.Server.Monad
 open Lapis.Server.Builder
 open Lapis.Server.Dispatcher
-open Lapis.Server.Documents
 open Lapis.Server.Progress
 open Lapis.Server.WorkspaceEdit
 open Lapis.Server.Diagnostics
@@ -117,8 +116,8 @@ def updateDiagnostics (uri : String) : ServerM MyState Unit := do
   let some content ← getDocumentContent uri | return
   let state ← getUserState
   let diagnostics := computeDiagnostics uri content state.maxDiagnostics
-  let some doc ← getDocument uri | return
-  publishDiagnostics { uri, version := some doc.version, diagnostics }
+  let some snapshot ← getDocumentSnapshot uri | return
+  publishDiagnostics { uri, version := some snapshot.version, diagnostics }
 
 /-! ## Symbol Extraction -/
 

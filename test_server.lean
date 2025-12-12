@@ -6,7 +6,6 @@ open Lapis.Protocol.Capabilities
 open Lapis.Server.Monad
 open Lapis.Server.Builder
 open Lapis.Server.Dispatcher
-open Lapis.Server.Documents
 open Lapis.Server.Progress
 open Lapis.Server.WorkspaceEdit
 open Lapis.Server.Diagnostics
@@ -57,19 +56,18 @@ def computeDiagnostics (content : String) : Array Diagnostic := Id.run do
   return diagnostics
 
 def updateDiagnostics (uri : DocumentUri) : ServerM TestState Unit := do
-  let some doc ← getDocument uri | return
-  let some content ← getDocumentContent uri | return
-  let diagnostics := computeDiagnostics content
+  let some snapshot ← getDocumentSnapshot uri | return
+  let diagnostics := computeDiagnostics snapshot.content
   publishDiagnostics {
     uri := uri
-    version := some doc.version
+    version := some snapshot.version
     diagnostics := diagnostics
   }
 
 def handleHover (params : HoverParams) : ServerM TestState (Option Hover) := do
   modifyUserState fun s => { s with requestCount := s.requestCount + 1 }
 
-  let some _doc ← getDocument params.textDocument.uri
+  let some _snapshot ← getDocumentSnapshot params.textDocument.uri
     | return none
 
   let some word ← getDocumentWordAt params.textDocument.uri params.position

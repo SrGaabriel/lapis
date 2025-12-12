@@ -5,6 +5,7 @@ import Lapis.Protocol.Capabilities
 import Lapis.Transport.Base
 import Lapis.Server.Documents
 import Lapis.Server.Receiver
+import Lapis.Concurrent.VfsActor
 
 namespace Lapis.Server.Monad
 
@@ -16,6 +17,7 @@ open Lapis.Protocol.Capabilities
 open Lapis.Transport
 open Lapis.Server.Documents
 open Lapis.Server.Receiver
+open Lapis.Concurrent.VfsActor
 
 /-- Server state -/
 structure ServerState (UserState : Type) where
@@ -23,8 +25,6 @@ structure ServerState (UserState : Type) where
   initialized : Bool := false
   /-- Whether shutdown has been requested -/
   shutdownRequested : Bool := false
-  /-- Document store (VFS-backed) -/
-  documents : DocumentStore
   /-- User-defined state -/
   userState : UserState
 
@@ -36,12 +36,16 @@ structure ServerContext (UserState : Type) where
   serverInfo : ServerInfo
   /-- Output channel for sending messages to client (thread-safe) -/
   outputChannel : OutputChannel
+  /-- VFS reference for document access -/
+  vfs : VfsRef
   /-- Shared state reference -/
   stateRef : IO.Ref (ServerState UserState)
   /-- Mutex for state modifications that need to be atomic -/
   stateMutex : AsyncMutex
   /-- Pending responses for client-initiated requests -/
   pendingResponses : PendingResponses
+  /-- Cancellation token for the current request (none for notifications or non-cancellable contexts) -/
+  cancelToken : Option IO.CancelToken := none
 
 /-- The server monad - provides access to shared context and IO. -/
 abbrev ServerM (UserState : Type) := ReaderT (ServerContext UserState) IO
@@ -94,59 +98,62 @@ def isShutdownRequested : ServerM UserState Bool := do
 def requestShutdown : ServerM UserState Unit :=
   modifyServerState fun st => { st with shutdownRequested := true }
 
-/-- Get the document store -/
-def getDocumentStore : ServerM UserState DocumentStore := do
-  return (← getServerState).documents
+/-- Check if the current request has been cancelled.
+    Returns false if there is no cancellation token (e.g., for notifications). -/
+def isCancelled : ServerM UserState Bool := do
+  match (← read).cancelToken with
+  | some token => token.isSet
+  | none => return false
 
-/-- Get a document by URI -/
-def getDocument (uri : DocumentUri) : ServerM UserState (Option Document) := do
-  let store ← getDocumentStore
-  store.get uri
+/-- Throw an error if the current request has been cancelled.
+    Use this in long-running operations to bail out early. -/
+def checkCancelled : ServerM UserState Unit := do
+  if ← isCancelled then
+    throw <| IO.userError "Request cancelled"
+
+/-- Get the VFS reference for document access -/
+def getVfs : ServerM UserState VfsRef := do
+  return (← read).vfs
+
+/-- Get a document snapshot by URI -/
+def getDocumentSnapshot (uri : DocumentUri) : ServerM UserState (Option DocumentSnapshot) := do
+  let vfs ← getVfs
+  vfs.getSnapshot uri
 
 /-- Get all open document URIs -/
 def getDocumentUris : ServerM UserState (List String) := do
-  let store ← getDocumentStore
-  store.getOpenDocuments
+  let vfs ← getVfs
+  vfs.getOpenDocuments
 
-/-- Open a document -/
-def openDocument (params : DidOpenTextDocumentParams) : ServerM UserState Unit := do
-  let store ← getDocumentStore
-  openDoc store params
-
-/-- Close a document -/
-def closeDocument (params : DidCloseTextDocumentParams) : ServerM UserState Unit := do
-  let store ← getDocumentStore
-  closeDoc store params
-
-/-- Apply document changes -/
-def changeDocument (params : DidChangeTextDocumentParams) : ServerM UserState Unit := do
-  let store ← getDocumentStore
-  changeDoc store params
+/-- Check if a document is open -/
+def hasDocument (uri : DocumentUri) : ServerM UserState Bool := do
+  let vfs ← getVfs
+  vfs.hasDocument uri
 
 /-- Get document content -/
 def getDocumentContent (uri : DocumentUri) : ServerM UserState (Option String) := do
-  let store ← getDocumentStore
-  Documents.getContent store uri
+  let vfs ← getVfs
+  vfs.getContent uri
 
 /-- Get a line from a document -/
 def getDocumentLine (uri : DocumentUri) (line : Nat) : ServerM UserState (Option String) := do
-  let store ← getDocumentStore
-  Documents.getLine store uri line
+  let vfs ← getVfs
+  vfs.getLine uri line
 
 /-- Get word at position -/
 def getDocumentWordAt (uri : DocumentUri) (pos : Position) : ServerM UserState (Option String) := do
-  let store ← getDocumentStore
-  Documents.getWordAt store uri pos
+  let vfs ← getVfs
+  vfs.getWordAt uri pos
 
 /-- Convert position to byte offset -/
 def documentPositionToOffset (uri : DocumentUri) (pos : Position) : ServerM UserState (Option Nat) := do
-  let store ← getDocumentStore
-  Documents.positionToOffset store uri pos
+  let vfs ← getVfs
+  vfs.positionToOffset uri pos
 
 /-- Convert byte offset to position -/
 def documentOffsetToPosition (uri : DocumentUri) (offset : Nat) : ServerM UserState (Option Position) := do
-  let store ← getDocumentStore
-  Documents.offsetToPosition store uri offset
+  let vfs ← getVfs
+  vfs.offsetToPosition uri offset
 
 /-- Get the output channel for sending messages to the client -/
 def getOutputChannel : ServerM UserState OutputChannel := do
