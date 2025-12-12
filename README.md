@@ -1,6 +1,6 @@
 # ✏️ lapis
 
-A minimal, lightweight Language Server Protocol (LSP) framework in Lean 4.
+A Language Server Protocol (LSP) framework in Lean 4.
 
 This is just a scaffold for building language servers in Lean 4. It provides the core LSP protocol handling, a virtual file system (VFS) for managing text documents, and utilities for common LSP tasks.
 
