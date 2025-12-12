@@ -10,7 +10,7 @@ This is a small example of a language server using lapis:
 
 ```lean
 def main : IO Unit := do
-  let config := ServerConfig.new "example-server" ({} : TestState)
+  let config := LspConfig.new "example-server"
     |>.withVersion "0.1.0"
     |>.withCapabilities {
       textDocumentSync := some {
@@ -31,9 +31,9 @@ def main : IO Unit := do
 
   runStdio config
   
-def handleDidOpen (params : DidOpenTextDocumentParams) : ServerM TestState Unit := do
-  showInfo "Document opened!"
-  updateDiagnostics params.textDocument.uri
+def handleDidOpen (ctx : RequestContext TestState) (params : DidOpenTextDocumentParams) : IO Unit := do
+  ctx.showInfo "Document opened!"
+  updateDiagnostics ctx params.textDocument.uri
 ```
 
 ## 📝 Features

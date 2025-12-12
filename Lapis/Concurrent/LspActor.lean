@@ -388,6 +388,8 @@ private def handleLspMsg (rt : LspRuntime UserState) (state : LspState UserState
     return .continue state
 
   | .shutdown =>
+    for (_, pending) in state.pendingRequests.toList do
+      pending.cancelToken.set
     return .stop
 
 /-! ## Spawn LSP Actor -/
