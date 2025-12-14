@@ -96,17 +96,50 @@ instance : FromJson HoverOptions where
     let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
     return { workDoneProgress }
 
+structure TypeDefinitionOptions where
+  workDoneProgress : Option Bool := none
+  deriving Inhabited, Repr
+
+instance : ToJson TypeDefinitionOptions where
+  toJson t := Json.mkObj <|
+    match t.workDoneProgress with
+    | some b => [("workDoneProgress", toJson b)]
+    | none => []
+
+instance : FromJson TypeDefinitionOptions where
+  fromJson? json := do
+    let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
+    return { workDoneProgress }
+
+structure InlayHintOptions where
+  workDoneProgress : Option Bool := none
+  resolveProvider : Option Bool := none
+  deriving Inhabited, Repr
+
+instance : ToJson InlayHintOptions where
+  toJson i := Json.mkObj <|
+    (match i.workDoneProgress with | some b => [("workDoneProgress", toJson b)] | none => []) ++
+    (match i.resolveProvider with | some r => [("resolveProvider", toJson r)] | none => [])
+
+instance : FromJson InlayHintOptions where
+  fromJson? json := do
+    let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
+    let resolveProvider := (json.getObjValAs? Bool "resolveProvider").toOption
+    return { workDoneProgress, resolveProvider }
+
 structure ServerCapabilities where
   textDocumentSync : Option TextDocumentSyncOptions := none
   completionProvider : Option CompletionOptions := none
   hoverProvider : Option Bool := none
   definitionProvider : Option Bool := none
+  typeDefinitionProvider : Option TypeDefinitionOptions := none
   referencesProvider : Option Bool := none
   documentSymbolProvider : Option Bool := none
   workspaceSymbolProvider : Option Bool := none
   codeActionProvider : Option Bool := none
   documentFormattingProvider : Option Bool := none
   renameProvider : Option Bool := none
+  inlayHintProvider : Option InlayHintOptions := none
   deriving Inhabited, Repr
 
 instance : ToJson ServerCapabilities where
@@ -115,12 +148,14 @@ instance : ToJson ServerCapabilities where
     (match s.completionProvider with | some c => [("completionProvider", toJson c)] | none => []) ++
     (match s.hoverProvider with | some h => [("hoverProvider", toJson h)] | none => []) ++
     (match s.definitionProvider with | some d => [("definitionProvider", toJson d)] | none => []) ++
+    (match s.typeDefinitionProvider with | some t => [("typeDefinitionProvider", toJson t)] | none => []) ++
     (match s.referencesProvider with | some r => [("referencesProvider", toJson r)] | none => []) ++
     (match s.documentSymbolProvider with | some d => [("documentSymbolProvider", toJson d)] | none => []) ++
     (match s.workspaceSymbolProvider with | some w => [("workspaceSymbolProvider", toJson w)] | none => []) ++
     (match s.codeActionProvider with | some c => [("codeActionProvider", toJson c)] | none => []) ++
     (match s.documentFormattingProvider with | some d => [("documentFormattingProvider", toJson d)] | none => []) ++
-    (match s.renameProvider with | some r => [("renameProvider", toJson r)] | none => [])
+    (match s.renameProvider with | some r => [("renameProvider", toJson r)] | none => []) ++
+    (match s.inlayHintProvider with | some i => [("inlayHintProvider", toJson i)] | none => [])
 
 instance : FromJson ServerCapabilities where
   fromJson? json := do
@@ -128,15 +163,18 @@ instance : FromJson ServerCapabilities where
     let completionProvider := (json.getObjValAs? CompletionOptions "completionProvider").toOption
     let hoverProvider := (json.getObjValAs? Bool "hoverProvider").toOption
     let definitionProvider := (json.getObjValAs? Bool "definitionProvider").toOption
+    let typeDefinitionProvider := (json.getObjValAs? TypeDefinitionOptions "typeDefinitionProvider").toOption
     let referencesProvider := (json.getObjValAs? Bool "referencesProvider").toOption
     let documentSymbolProvider := (json.getObjValAs? Bool "documentSymbolProvider").toOption
     let workspaceSymbolProvider := (json.getObjValAs? Bool "workspaceSymbolProvider").toOption
     let codeActionProvider := (json.getObjValAs? Bool "codeActionProvider").toOption
     let documentFormattingProvider := (json.getObjValAs? Bool "documentFormattingProvider").toOption
     let renameProvider := (json.getObjValAs? Bool "renameProvider").toOption
+    let inlayHintProvider := (json.getObjValAs? InlayHintOptions "inlayHintProvider").toOption
     return { textDocumentSync, completionProvider, hoverProvider, definitionProvider,
-             referencesProvider, documentSymbolProvider, workspaceSymbolProvider,
-             codeActionProvider, documentFormattingProvider, renameProvider }
+             typeDefinitionProvider, referencesProvider, documentSymbolProvider,
+             workspaceSymbolProvider, codeActionProvider, documentFormattingProvider,
+             renameProvider, inlayHintProvider }
 
 
 /-- TODO: Client capabilities -/
