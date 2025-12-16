@@ -75,35 +75,41 @@ end ServerRuntime
 
 /-! ## Message Routing -/
 
-/-- Route a notification to the appropriate actor -/
-private def routeNotification (rt : ServerRuntime UserState) (msg : NotificationMessage) : IO Unit := do
+private def routeNotification
+  (rt : ServerRuntime UserState)
+  (msg : NotificationMessage) : IO Unit := do
+
   match msg.method with
-  -- Document lifecycle goes to VFS actor
   | "textDocument/didOpen" =>
     if let some params := msg.params then
-      if let .ok p := FromJson.fromJson? (α := DidOpenTextDocumentParams) params then
+      if let .ok p :=
+        FromJson.fromJson? (α := DidOpenTextDocumentParams) params then
         rt.vfs.openDocument p
 
   | "textDocument/didChange" =>
     if let some params := msg.params then
-      if let .ok p := FromJson.fromJson? (α := DidChangeTextDocumentParams) params then
+      if let .ok p :=
+        FromJson.fromJson? (α := DidChangeTextDocumentParams) params then
         rt.vfs.changeDocument p
 
   | "textDocument/didClose" =>
     if let some params := msg.params then
-      if let .ok p := FromJson.fromJson? (α := DidCloseTextDocumentParams) params then
+      if let .ok p :=
+        FromJson.fromJson? (α := DidCloseTextDocumentParams) params then
         rt.vfs.closeDocument p
 
-  -- Cancellation goes to LSP actor
   | "$/cancelRequest" =>
     if let some params := msg.params then
       if let .ok idJson := params.getObjVal? "id" then
-        if let .ok reqId := FromJson.fromJson? (α := RequestId) idJson then
+        if let .ok reqId :=
+          FromJson.fromJson? (α := RequestId) idJson then
           rt.lsp.cancelRequest reqId
 
-  -- Everything else goes to LSP actor
   | _ =>
-    rt.lsp.handleNotification msg
+    pure ()
+
+  -- Everything goes to LSP actor
+  rt.lsp.handleNotification msg
 
 /-- Route a request to the LSP actor -/
 private def routeRequest (rt : ServerRuntime UserState) (msg : RequestMessage) : IO Unit := do
