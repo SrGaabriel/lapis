@@ -3,11 +3,13 @@
   https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
 -/
 import Lapis.Protocol.Types
+import Lapis.Protocol.Generated
 
 namespace Lapis.Protocol.Capabilities
 
 open Lean Json
 open Lapis.Protocol.Types
+open Lapis.Protocol.Generated
 
 /-- How documents are synced to the server -/
 inductive TextDocumentSyncKind where
@@ -140,7 +142,8 @@ structure ServerCapabilities where
   documentFormattingProvider : Option Bool := none
   renameProvider : Option Bool := none
   inlayHintProvider : Option InlayHintOptions := none
-  deriving Inhabited, Repr
+  semanticTokensProvider : Option SemanticTokensOptions := none
+  deriving Inhabited
 
 instance : ToJson ServerCapabilities where
   toJson s := Json.mkObj <|
@@ -155,7 +158,8 @@ instance : ToJson ServerCapabilities where
     (match s.codeActionProvider with | some c => [("codeActionProvider", toJson c)] | none => []) ++
     (match s.documentFormattingProvider with | some d => [("documentFormattingProvider", toJson d)] | none => []) ++
     (match s.renameProvider with | some r => [("renameProvider", toJson r)] | none => []) ++
-    (match s.inlayHintProvider with | some i => [("inlayHintProvider", toJson i)] | none => [])
+    (match s.inlayHintProvider with | some i => [("inlayHintProvider", toJson i)] | none => []) ++
+    (match s.semanticTokensProvider with | some st => [("semanticTokensProvider", toJson st)] | none => [])
 
 instance : FromJson ServerCapabilities where
   fromJson? json := do
@@ -171,10 +175,11 @@ instance : FromJson ServerCapabilities where
     let documentFormattingProvider := (json.getObjValAs? Bool "documentFormattingProvider").toOption
     let renameProvider := (json.getObjValAs? Bool "renameProvider").toOption
     let inlayHintProvider := (json.getObjValAs? InlayHintOptions "inlayHintProvider").toOption
+    let semanticTokensProvider := (json.getObjValAs? SemanticTokensOptions "semanticTokensProvider").toOption
     return { textDocumentSync, completionProvider, hoverProvider, definitionProvider,
              typeDefinitionProvider, referencesProvider, documentSymbolProvider,
              workspaceSymbolProvider, codeActionProvider, documentFormattingProvider,
-             renameProvider, inlayHintProvider }
+             renameProvider, inlayHintProvider, semanticTokensProvider }
 
 
 /-- TODO: Client capabilities -/

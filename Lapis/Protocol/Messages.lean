@@ -52,7 +52,7 @@ instance : FromJson ServerInfo where
 structure InitializeResult where
   capabilities : ServerCapabilities
   serverInfo : Option ServerInfo := none
-  deriving Inhabited, Repr
+  deriving Inhabited
 
 instance : ToJson InitializeResult where
   toJson r := Json.mkObj <|

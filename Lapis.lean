@@ -11,5 +11,6 @@ import Lapis.Server.Progress
 import Lapis.Server.WorkspaceEdit
 import Lapis.Server.Diagnostics
 import Lapis.Server.Registration
+import Lapis.Server.SemanticTokens
 
 import Lapis.Concurrent
