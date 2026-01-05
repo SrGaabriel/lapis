@@ -212,6 +212,9 @@ def testDiagnosticBuilder : Array Diagnostic :=
         "This is deprecated"
     |>.build
 
+def handleInitialize (_ctx : RequestContext TestState) (_params : InitializeParams) : IO Unit := do
+  return ()
+
 def main : IO Unit := do
   let config : LspConfig TestState := LspConfig.new "example-server"
     |>.withVersion "0.1.0"
@@ -227,6 +230,7 @@ def main : IO Unit := do
         resolveProvider := some false
       }
     }
+    |>.onInitialize handleInitialize
     |>.onRequestOpt "textDocument/hover" handleHover
     |>.onRequest "textDocument/completion" handleCompletion
     |>.onNotification "textDocument/didOpen" handleDidOpen

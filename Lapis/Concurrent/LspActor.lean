@@ -207,6 +207,8 @@ structure LspConfig (UserState : Type) where
   notificationHandlers : HashMap String (NotificationHandler UserState) := {}
   /-- Maximum concurrent requests -/
   maxConcurrentRequests : Nat := 8
+  /-- Hook called on initialize -/
+  initializeHook : Option (RequestContext UserState → InitializeParams → IO Unit) := none
 
 /-- LSP Actor state -/
 structure LspState (UserState : Type) where
@@ -266,7 +268,20 @@ structure LspRuntime (UserState : Type) where
   pendingRequestsRef : IO.Ref (HashMap String PendingRequest)
 
 /-- Handle initialize request -/
-private def handleInitialize (rt : LspRuntime UserState) (_params : InitializeParams) : IO InitializeResult := do
+private def handleInitialize (rt : LspRuntime UserState) (params : InitializeParams) : IO InitializeResult := do
+  if let some hook := rt.config.initializeHook then
+    let ctx := {
+      vfs := rt.vfs
+      outputChannel := rt.outputChannel
+      pendingResponses := rt.pendingResponses
+      userStateRef := rt.userStateRef
+      capabilities := rt.config.capabilities
+      serverInfo := { name := rt.config.name, version := rt.config.version }
+      progressManager := rt.progressManager
+      cancelToken := (← IO.CancelToken.new) -- not cancellable during initialize
+    }
+    hook ctx params
+
   return {
     capabilities := rt.config.capabilities
     serverInfo := some { name := rt.config.name, version := rt.config.version }
@@ -510,6 +525,11 @@ def onNotification [FromJson Params]
 /-- Set max concurrent requests -/
 def withMaxConcurrentRequests (config : LspConfig UserState) (n : Nat) : LspConfig UserState :=
   { config with maxConcurrentRequests := n }
+  
+def onInitialize
+    (config : LspConfig UserState)
+    (hook : RequestContext UserState → InitializeParams → IO Unit) : LspConfig UserState :=
+  { config with initializeHook := some hook }
 
 end LspConfig
 
