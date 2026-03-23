@@ -126,11 +126,11 @@ def getLineContentTrimmed (ctx : ConversionContext) (line : Nat) : Option String
   | some content =>
     -- Remove trailing newline if present
     if content.endsWith "\n" then
-      some (content.dropRight 1)
+      some (content.dropEnd 1 |>.toString)
     else if content.endsWith "\r\n" then
-      some (content.dropRight 2)
+      some (content.dropEnd 2 |>.toString)
     else if content.endsWith "\r" then
-      some (content.dropRight 1)
+      some (content.dropEnd 1 |>.toString)
     else
       some content
 
