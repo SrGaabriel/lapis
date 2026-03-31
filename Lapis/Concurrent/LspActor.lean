@@ -525,7 +525,7 @@ def onNotification [FromJson Params]
 /-- Set max concurrent requests -/
 def withMaxConcurrentRequests (config : LspConfig UserState) (n : Nat) : LspConfig UserState :=
   { config with maxConcurrentRequests := n }
-  
+
 def onInitialize
     (config : LspConfig UserState)
     (hook : RequestContext UserState → InitializeParams → IO Unit) : LspConfig UserState :=
