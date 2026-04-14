@@ -133,6 +133,7 @@ structure ServerCapabilities where
   textDocumentSync : Option TextDocumentSyncOptions := none
   completionProvider : Option CompletionOptions := none
   hoverProvider : Option Bool := none
+  signatureHelpProvider : Option SignatureHelpOptions := none
   definitionProvider : Option Bool := none
   typeDefinitionProvider : Option TypeDefinitionOptions := none
   referencesProvider : Option Bool := none
@@ -150,6 +151,7 @@ instance : ToJson ServerCapabilities where
     (match s.textDocumentSync with | some t => [("textDocumentSync", toJson t)] | none => []) ++
     (match s.completionProvider with | some c => [("completionProvider", toJson c)] | none => []) ++
     (match s.hoverProvider with | some h => [("hoverProvider", toJson h)] | none => []) ++
+    (match s.signatureHelpProvider with | some sh => [("signatureHelpProvider", toJson sh)] | none => []) ++
     (match s.definitionProvider with | some d => [("definitionProvider", toJson d)] | none => []) ++
     (match s.typeDefinitionProvider with | some t => [("typeDefinitionProvider", toJson t)] | none => []) ++
     (match s.referencesProvider with | some r => [("referencesProvider", toJson r)] | none => []) ++
@@ -166,6 +168,7 @@ instance : FromJson ServerCapabilities where
     let textDocumentSync := (json.getObjValAs? TextDocumentSyncOptions "textDocumentSync").toOption
     let completionProvider := (json.getObjValAs? CompletionOptions "completionProvider").toOption
     let hoverProvider := (json.getObjValAs? Bool "hoverProvider").toOption
+    let signatureHelpProvider := (json.getObjValAs? SignatureHelpOptions "signatureHelpProvider").toOption
     let definitionProvider := (json.getObjValAs? Bool "definitionProvider").toOption
     let typeDefinitionProvider := (json.getObjValAs? TypeDefinitionOptions "typeDefinitionProvider").toOption
     let referencesProvider := (json.getObjValAs? Bool "referencesProvider").toOption
@@ -176,7 +179,7 @@ instance : FromJson ServerCapabilities where
     let renameProvider := (json.getObjValAs? Bool "renameProvider").toOption
     let inlayHintProvider := (json.getObjValAs? InlayHintOptions "inlayHintProvider").toOption
     let semanticTokensProvider := (json.getObjValAs? SemanticTokensOptions "semanticTokensProvider").toOption
-    return { textDocumentSync, completionProvider, hoverProvider, definitionProvider,
+    return { textDocumentSync, completionProvider, hoverProvider, signatureHelpProvider, definitionProvider,
              typeDefinitionProvider, referencesProvider, documentSymbolProvider,
              workspaceSymbolProvider, codeActionProvider, documentFormattingProvider,
              renameProvider, inlayHintProvider, semanticTokensProvider }

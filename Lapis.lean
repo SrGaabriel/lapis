@@ -12,5 +12,6 @@ import Lapis.Server.WorkspaceEdit
 import Lapis.Server.Diagnostics
 import Lapis.Server.Registration
 import Lapis.Server.SemanticTokens
+import Lapis.Server.InlayHints
 
 import Lapis.Concurrent
