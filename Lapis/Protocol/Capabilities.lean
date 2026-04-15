@@ -2,6 +2,7 @@
   LSP 3.17 Capabilities
   https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
 -/
+import Lean.Data.Json
 import Lapis.Protocol.Types
 import Lapis.Protocol.Generated
 
@@ -9,50 +10,20 @@ namespace Lapis.Protocol.Capabilities
 
 open Lean Json
 open Lapis.Protocol.Types
-open Lapis.Protocol.Generated
 
-/-- How documents are synced to the server -/
-inductive TextDocumentSyncKind where
-  | none       -- 0
-  | full       -- 1: Full content sent on each change
-  | incremental -- 2: Incremental changes sent
-  deriving Inhabited, BEq, Repr
-
-instance : ToJson TextDocumentSyncKind where
-  toJson
-    | .none => 0
-    | .full => 1
-    | .incremental => 2
-
-instance : FromJson TextDocumentSyncKind where
-  fromJson? json := do
-    let n ← json.getNat?
-    match n with
-    | 0 => return .none
-    | 1 => return .full
-    | 2 => return .incremental
-    | _ => throw s!"Invalid TextDocumentSyncKind: {n}"
-
-structure SaveOptions where
-  includeText : Option Bool := none
-  deriving Inhabited, Repr
-
-instance : ToJson SaveOptions where
-  toJson s := Json.mkObj <|
-    match s.includeText with
-    | some b => [("includeText", toJson b)]
-    | none => []
-
-instance : FromJson SaveOptions where
-  fromJson? json := do
-    let includeText := (json.getObjValAs? Bool "includeText").toOption
-    return { includeText }
+abbrev TextDocumentSyncKind := Lapis.Protocol.Generated.TextDocumentSyncKind
+abbrev SaveOptions := Lapis.Protocol.Generated.SaveOptions
+abbrev HoverOptions := Lapis.Protocol.Generated.HoverOptions
+abbrev TypeDefinitionOptions := Lapis.Protocol.Generated.TypeDefinitionOptions
+abbrev InlayHintOptions := Lapis.Protocol.Generated.InlayHintOptions
+abbrev SignatureHelpOptions := Lapis.Protocol.Generated.SignatureHelpOptions
+abbrev SemanticTokensOptions := Lapis.Protocol.Generated.SemanticTokensOptions
 
 structure TextDocumentSyncOptions where
   openClose : Option Bool := none
   change : Option TextDocumentSyncKind := none
   save : Option SaveOptions := none
-  deriving Inhabited, Repr
+  deriving Inhabited
 
 instance : ToJson TextDocumentSyncOptions where
   toJson s := Json.mkObj <|
@@ -82,52 +53,6 @@ instance : FromJson CompletionOptions where
     let triggerCharacters := (json.getObjValAs? (Array String) "triggerCharacters").toOption
     let resolveProvider := (json.getObjValAs? Bool "resolveProvider").toOption
     return { triggerCharacters, resolveProvider }
-
-structure HoverOptions where
-  workDoneProgress : Option Bool := none
-  deriving Inhabited, Repr
-
-instance : ToJson HoverOptions where
-  toJson h := Json.mkObj <|
-    match h.workDoneProgress with
-    | some b => [("workDoneProgress", toJson b)]
-    | none => []
-
-instance : FromJson HoverOptions where
-  fromJson? json := do
-    let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
-    return { workDoneProgress }
-
-structure TypeDefinitionOptions where
-  workDoneProgress : Option Bool := none
-  deriving Inhabited, Repr
-
-instance : ToJson TypeDefinitionOptions where
-  toJson t := Json.mkObj <|
-    match t.workDoneProgress with
-    | some b => [("workDoneProgress", toJson b)]
-    | none => []
-
-instance : FromJson TypeDefinitionOptions where
-  fromJson? json := do
-    let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
-    return { workDoneProgress }
-
-structure InlayHintOptions where
-  workDoneProgress : Option Bool := none
-  resolveProvider : Option Bool := none
-  deriving Inhabited, Repr
-
-instance : ToJson InlayHintOptions where
-  toJson i := Json.mkObj <|
-    (match i.workDoneProgress with | some b => [("workDoneProgress", toJson b)] | none => []) ++
-    (match i.resolveProvider with | some r => [("resolveProvider", toJson r)] | none => [])
-
-instance : FromJson InlayHintOptions where
-  fromJson? json := do
-    let workDoneProgress := (json.getObjValAs? Bool "workDoneProgress").toOption
-    let resolveProvider := (json.getObjValAs? Bool "resolveProvider").toOption
-    return { workDoneProgress, resolveProvider }
 
 structure ServerCapabilities where
   textDocumentSync : Option TextDocumentSyncOptions := none
@@ -183,7 +108,6 @@ instance : FromJson ServerCapabilities where
              typeDefinitionProvider, referencesProvider, documentSymbolProvider,
              workspaceSymbolProvider, codeActionProvider, documentFormattingProvider,
              renameProvider, inlayHintProvider, semanticTokensProvider }
-
 
 /-- TODO: Client capabilities -/
 structure ClientCapabilities where
