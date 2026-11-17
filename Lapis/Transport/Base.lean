@@ -34,13 +34,17 @@ private partial def writerLoop (state : WriterState) (writeFunc : Message → IO
   -- Check shutdown
   if ← state.shutdown.get then return
 
+  -- Install a fresh signal before checking the queue, so a message sent
+  -- after the check resolves the promise we wait on
+  let sig ← IO.Promise.new
+  state.signal.set sig
+
   -- Try to get messages
   let msgs ← state.queue.swap #[]
 
   if msgs.isEmpty then
-    -- Wait for signal
-    let sig ← state.signal.get
-    let _ := sig.result!
+    -- Wait for signal (`let _ := sig.result!` is erased as dead code)
+    let _ ← IO.wait sig.result!
     writerLoop state writeFunc
   else
     -- Write all messages
